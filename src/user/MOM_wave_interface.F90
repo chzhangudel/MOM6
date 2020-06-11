@@ -247,7 +247,7 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
        Default=.false.)
   if (CS%StokesMixing) then
     ! Force Code Intervention
-    call MOM_error(FATAL,"Should you be enabling Stokes Mixing? Code not ready.")
+    call MOM_error(WARNING,"Should you be enabling Stokes Mixing? Code not ready.")
   endif
   call get_param(param_file, mdl, "CORIOLIS_STOKES", CS%CoriolisStokes, &
        "Flag to use Coriolis Stokes acceleration", units="", &
@@ -398,15 +398,15 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
   CS%La_turb (:,:) = 0.0
   ! d. Viscosity for Stokes drift
   if (CS%StokesMixing) then
-    allocate(CS%KvS(G%isd:G%Ied,G%jsd:G%jed,G%ke))
+    allocate(CS%KvS(G%isd:G%Ied,G%jsd:G%jed,G%ke+1))
     CS%KvS(:,:,:) = 0.0
   endif
 
   ! Initialize Wave related outputs
   CS%id_surfacestokes_y = register_diag_field('ocean_model','surface_stokes_y', &
-       CS%diag%axesCu1,Time,'Surface Stokes drift (y)','m s-1')
+       CS%diag%axesCv1,Time,'Surface Stokes drift (y)','m s-1')
   CS%id_surfacestokes_x = register_diag_field('ocean_model','surface_stokes_x', &
-       CS%diag%axesCv1,Time,'Surface Stokes drift (x)','m s-1')
+       CS%diag%axesCu1,Time,'Surface Stokes drift (x)','m s-1')
   CS%id_3dstokes_y = register_diag_field('ocean_model','3d_stokes_y', &
        CS%diag%axesCvL,Time,'3d Stokes drift (y)','m s-1')
   CS%id_3dstokes_x = register_diag_field('ocean_model','3d_stokes_x', &
@@ -937,7 +937,7 @@ end subroutine Surface_Bands_by_data_override
 !!  want the wind-speed only dependent Langmuir number.  Therefore, we need to be
 !!  careful about what we try to access here.
 subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
-                                H, U_H, V_H, Override_MA, Waves )
+                                H, U_H, V_H, Override_MA, debug_in, Waves )
   type(ocean_grid_type),   intent(in) :: G  !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV !< Ocean vertical grid structure
   type(unit_scale_type),   intent(in) :: US !< A dimensional unit scaling type
@@ -949,6 +949,8 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
                                 !! calculation. This can be used if diagnostic
                                 !! LA outputs are desired that are different than
                                 !! those used by the dynamical model.
+  logical, optional, intent(in) :: debug_in
+
   real, dimension(SZK_(GV)), optional, &
        intent(in)      :: H     !< Grid layer thickness [H ~> m or kg m-2]
   real, dimension(SZK_(GV)), optional, &
@@ -964,7 +966,7 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
   real :: Top, bottom, midpoint
   real :: Dpt_LASL, ShearDirection, WaveDirection
   real :: LA_STKx, LA_STKy, LA_STK ! Stokes velocities in [m s-1]
-  logical :: ContinueLoop, USE_MA
+  logical :: ContinueLoop, USE_MA, debug
   real, dimension(SZK_(G)) :: US_H, VS_H
   real, dimension(NumBands) :: StkBand_X, StkBand_Y
   integer :: KK, BB
@@ -974,6 +976,7 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
 
   USE_MA = LA_Misalignment
   if (present(Override_MA)) USE_MA = Override_MA
+  if (present(debug_in)) debug = debug_in
 
   ! If requesting to use misalignment in the Langmuir number compute the Shear Direction
   if (USE_MA) then
@@ -986,8 +989,8 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
       Top = Bottom
       MidPoint = Bottom + GV%H_to_Z*0.5*h(kk)
       Bottom = Bottom + GV%H_to_Z*h(kk)
-      if (MidPoint > Dpt_LASL .and. kk > 1 .and. ContinueLoop) then
-        ShearDirection = atan2(V_H(1)-V_H(kk),U_H(1)-U_H(kk))
+      if (MidPoint > abs(Dpt_LASL) .and. kk > 1 .and. ContinueLoop) then
+        ShearDirection = atan2(V_H(kk)-V_H(1),U_H(kk)-U_H(1))
         ContinueLoop = .false.
       endif
     enddo
@@ -1035,6 +1038,12 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
     ! the curve fit parameterizations.
     ! Note the dimensional constant background Stokes velocity of 10^-10 m s-1.
     LA = max(WAVES%La_min, sqrt(US%Z_to_m*US%s_to_T*ustar / (LA_STK+1.e-10)))
+  endif
+
+  if (debug) then
+     WaveDirection = atan2(LA_STKy, LA_STKx)
+     write(*,*)'In get Langmuir number:',LA,LA_STK,ustar
+     write(*,*)WaveDirection,ShearDirection,cos(wavedirection-sheardirection)
   endif
 
   if (Use_MA) then

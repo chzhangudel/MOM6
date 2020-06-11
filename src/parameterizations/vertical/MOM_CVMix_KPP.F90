@@ -111,7 +111,7 @@ type, public :: KPP_CS ; private
   logical :: LT_Vt2_Enhancement        !< Flags if enhancing Vt2 due to LT
   integer :: LT_VT2_METHOD             !< Integer for Vt2 LT method
   real    :: KPP_VT2_ENH_FAC           !< Factor to multiply by VT2 if Method is CONSTANT
-  logical :: STOKES_MIXING             !< Flag if model is mixing down Stokes gradient
+  logical :: Lagrangian_shear          !< Flag if model is mixing down Stokes gradient
                                        !! This is relavent for which current to use in RiB
 
   !> CVMix parameters
@@ -377,7 +377,7 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive, Waves)
   call get_param(paramFile, mdl, "USE_KPP_LT_K", CS%LT_K_Enhancement, &
        'Flag for Langmuir turbulence enhancement of turbulent'//&
        'mixing coefficient.', units="", Default=.false.)
-  call get_param(paramFile, mdl, "STOKES_MIXING", CS%STOKES_MIXING, &
+  call get_param(paramFile, mdl, "KPP_LAGRANGIAN_SHEAR", CS%LAGRANGIAN_SHEAR, &
        'Flag for Langmuir turbulence enhancement of turbulent'//&
        'mixing coefficient.', units="", Default=.false.)
   if (CS%LT_K_Enhancement) then
@@ -836,14 +836,14 @@ subroutine KPP_calculate(CS, G, GV, US, h, uStar, &
             Kt(i,j,k) = Kt(i,j,k) + US%m2_s_to_Z2_T * Kdiffusivity(k,1)
             Ks(i,j,k) = Ks(i,j,k) + US%m2_s_to_Z2_T * Kdiffusivity(k,2)
             Kv(i,j,k) = Kv(i,j,k) + US%m2_s_to_Z2_T * Kviscosity(k)
-            if (CS%Stokes_Mixing) Waves%KvS(i,j,k) = Kv(i,j,k)
+!            if (CS%Stokes_Mixing) Waves%KvS(i,j,k) = Kv(i,j,k)
           enddo
         else ! KPP replaces prior diffusivity when former is non-zero
           do k=1, G%ke+1
             if (Kdiffusivity(k,1) /= 0.) Kt(i,j,k) = US%m2_s_to_Z2_T * Kdiffusivity(k,1)
             if (Kdiffusivity(k,2) /= 0.) Ks(i,j,k) = US%m2_s_to_Z2_T * Kdiffusivity(k,2)
             if (Kviscosity(k) /= 0.) Kv(i,j,k) = US%m2_s_to_Z2_T * Kviscosity(k)
-            if (CS%Stokes_Mixing) Waves%KvS(i,j,k) = Kv(i,j,k)
+!            if (CS%Stokes_Mixing) Waves%KvS(i,j,k) = Kv(i,j,k)
           enddo
         endif
       endif
@@ -941,7 +941,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, EOS, uStar, buoyF
   real :: H10pct, H20pct,CMNFACT, USx20pct, USy20pct, enhvt2
   integer :: B
   real :: WST
-
+  logical :: debug_la
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
@@ -967,6 +967,10 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, EOS, uStar, buoyF
       do k=1,G%ke
         U_H(k) = 0.5 * US%L_T_to_m_s*(u(i,j,k)+u(i-1,j,k))
         V_H(k) = 0.5 * US%L_T_to_m_s*(v(i,j,k)+v(i,j-1,k))
+        if (CS%Lagrangian_Shear) then
+          U_H(k) = U_H(k) + 0.5 * (WAVES%uS_x(i,j,k)+WAVES%uS_x(i-1,j,k))
+          V_H(k) = V_H(k) + 0.5 * (WAVES%uS_y(i,j,k)+WAVES%uS_y(i,j-1,k))
+        endif
       enddo
 
       ! things independent of position within the column
@@ -1025,7 +1029,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, EOS, uStar, buoyF
           surfHsalt = surfHsalt + Salt(i,j,ktmp) * delH
           surfHu    = surfHu + 0.5*US%L_T_to_m_s*(u(i,j,ktmp)+u(i-1,j,ktmp)) * delH
           surfHv    = surfHv + 0.5*US%L_T_to_m_s*(v(i,j,ktmp)+v(i,j-1,ktmp)) * delH
-          if (CS%Stokes_Mixing) then
+          if (CS%Lagrangian_Shear) then
             surfHus = surfHus + 0.5*(WAVES%US_x(i,j,ktmp)+WAVES%US_x(i-1,j,ktmp)) * delH
             surfHvs = surfHvs + 0.5*(WAVES%US_y(i,j,ktmp)+WAVES%US_y(i,j-1,ktmp)) * delH
           endif
@@ -1044,10 +1048,10 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, EOS, uStar, buoyF
         Uk         = 0.5*US%L_T_to_m_s*(u(i,j,k)+u(i-1,j,k)) - surfU
         Vk         = 0.5*US%L_T_to_m_s*(v(i,j,k)+v(i,j-1,k)) - surfV
 
-        if (CS%Stokes_Mixing) then
-          ! If momentum is mixed down the Stokes drift gradient, then
-          !  the Stokes drift must be included in the bulk Richardson number
-          !  calculation.
+        if (CS%Lagrangian_Shear) then
+!          ! If momentum is mixed down the Stokes drift gradient, then
+!          !  the Stokes drift must be included in the bulk Richardson number
+!          !  calculation.
           Uk =  Uk + (0.5*(Waves%Us_x(i,j,k)+Waves%US_x(i-1,j,k)) -surfUs )
           Vk =  Vk + (0.5*(Waves%Us_y(i,j,k)+Waves%Us_y(i,j-1,k)) -surfVs )
         endif
@@ -1081,8 +1085,15 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, EOS, uStar, buoyF
 
       if (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT) then
         MLD_GUESS = max( 1.*US%m_to_Z, abs(US%m_to_Z*CS%OBLdepthprev(i,j) ) )
+        debug_la = .false.
+! Uncomment this to print out additional information from Langmuir number calculation when surface current
+! is large.
+!        if (abs(U_H(1))>0.5) then
+!          print*,ustar(i,j),mld_guess
+!          debug_La = .true.
+!        endif
         call get_Langmuir_Number(LA, G, GV, US, MLD_guess, uStar(i,j), i, j, &
-                                 H=H(i,j,:), U_H=U_H, V_H=V_H, WAVES=WAVES)
+                                 H=H(i,j,:), U_H=U_H, V_H=V_H, WAVES=WAVES, DEBUG_in=DEBUG_LA)
         CS%La_SL(i,j)=LA
       endif
 
