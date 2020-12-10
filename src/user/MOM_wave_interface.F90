@@ -976,7 +976,11 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, &
 
   USE_MA = LA_Misalignment
   if (present(Override_MA)) USE_MA = Override_MA
-  if (present(debug_in)) debug = debug_in
+  if (present(debug_in)) then
+    debug = debug_in
+  else
+    debug = .false.
+  endif
 
   ! If requesting to use misalignment in the Langmuir number compute the Shear Direction
   if (USE_MA) then
