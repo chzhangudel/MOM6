@@ -68,6 +68,7 @@ program MOM_main
   use MOM_wave_interface,  only : Update_Surface_Waves
   use MOM_write_cputime,   only : write_cputime, MOM_write_cputime_init
   use MOM_write_cputime,   only : write_cputime_start_clock, write_cputime_CS
+  use forpy_util,          only : forpy_run_python_init,forpy_run_python_finalize !Cheng
 
   implicit none
 
@@ -200,6 +201,8 @@ program MOM_main
                             ocean_nthreads, use_hyper_thread
 
   !=====================================================================
+
+  call forpy_run_python_init()!Cheng
 
   call write_cputime_start_clock(write_CPU_CSp)
 
@@ -616,6 +619,8 @@ program MOM_main
   call cpu_clock_end(termClock)
 
   call io_infra_end ; call MOM_infra_end
+
+  call forpy_run_python_finalize()!Cheng
 
   call MOM_end(MOM_CSp)
 
