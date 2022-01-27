@@ -1,41 +1,53 @@
 module forpy_util
 
-use forpy_mod
-use iso_fortran_env, only: real64
+use forpy_mod,                 only : module_py,list,ndarray,object,tuple
+use forpy_mod,                 only : err_print
+use forpy_mod,                 only : forpy_initialize,get_sys_path,import_py,print_py
+use forpy_mod,                 only : ndarray_create,tuple_create,call_py,cast
+use forpy_mod,                 only : forpy_finalize
+use iso_fortran_env,           only : real64
 
 implicit none ; private
 
 public :: forpy_run_python_init,forpy_run_python,forpy_run_python_finalize
 
-integer :: ierror
-type(module_py) :: f2p2f
-type(list) :: paths
+!> Control structure for Python interface
+type, public :: python_interface ; private
+  type(module_py) :: pymodule
+  type(list) :: paths
+end type
 
 contains
 
 !> Send a variable to a python script and output the results
-subroutine forpy_run_python_init()
-
+subroutine forpy_run_python_init(CS,python_dir,python_file)
+  character(len=*),         intent(in)  :: python_dir   !< The directory in which python scripts are found
+  character(len=*),         intent(in)  :: python_file  !< The name of the Python script to read
+  type(python_interface), intent(inout) :: CS !< Python interface object
+  ! Local Variables
+  integer :: ierror ! return code from python interfaces
   ierror = forpy_initialize()
   write(*,*) "############ Initialize Forpy ############"
-  ierror = get_sys_path(paths)
-  ierror = paths%append('/scratch/cimes/cz3321/MOM6/MOM6-examples/src/MOM6/config_src/external/ML_Forpy/')
-  ierror = import_py(f2p2f, "f2p2f")
+  ierror = get_sys_path(CS%paths)
+  ierror = CS%paths%append(python_dir)
+  ierror = import_py(CS%pymodule,python_file)
   if (ierror/=0) then; call err_print; endif
-  ierror = print_py(f2p2f)
+  ierror = print_py(CS%pymodule)
   if (ierror/=0) then; call err_print; endif
 
 end subroutine forpy_run_python_init
 
 !> Send a variable to a python script and output the results
-subroutine forpy_run_python(diffu,diffv)
-
-  real,dimension(:,:,:), intent(inout):: diffu,diffv
+subroutine forpy_run_python(CS,diffu,diffv)
+  type(python_interface), intent(in) :: CS !< Python interface object
+  real,dimension(:,:,:), intent(inout):: diffu !< u-acceleration due to diffusion [m s-1]
+  real,dimension(:,:,:), intent(inout):: diffv !< v-acceleration due to diffusion [m s-1]
   ! Local Variables
-  type(ndarray) :: diffu_py,diffv_py,diffu_arr,diffv_arr
-  type(object) :: obj_diffu,obj_diffv
-  type(tuple) :: args_u,args_v
-  real, dimension(:,:,:), pointer :: diffu_for,diffv_for
+  integer :: ierror ! return code from python interfaces
+  type(ndarray) :: diffu_py,diffv_py,diffu_arr,diffv_arr !< diffu in the form of numpy array
+  type(object)  :: obj_diffu,obj_diffv                   !< return objects
+  type(tuple)   :: args_u,args_v                         !< input arguments for the Python module
+  real, dimension(:,:,:), pointer :: diffu_for,diffv_for !< outputs from Python module
   real :: io_diffu_max,io_diffv_max
 
   ! Covert input into Forpy Numpy Arrays 
@@ -52,8 +64,8 @@ subroutine forpy_run_python(diffu,diffv)
   if (ierror/=0) then; call err_print; endif
 
   ! Invoke Python 
-  ierror = call_py(obj_diffu, f2p2f, "iou_py", args_u)
-  ierror = call_py(obj_diffv, f2p2f, "iov_py", args_v)
+  ierror = call_py(obj_diffu, CS%pymodule, "iou_py", args_u)
+  ierror = call_py(obj_diffv, CS%pymodule, "iov_py", args_v)
   if (ierror/=0) then; call err_print; endif
   ierror = cast(diffu_arr, obj_diffu)
   ierror = cast(diffv_arr, obj_diffv)
@@ -84,10 +96,11 @@ subroutine forpy_run_python(diffu,diffv)
 
 end subroutine forpy_run_python
 
-subroutine forpy_run_python_finalize()
+subroutine forpy_run_python_finalize(CS)
+  type(python_interface), intent(inout) :: CS !< Python interface object
   write(*,*) "############ Finalize Forpy ############"
-  call f2p2f%destroy
-  call paths%destroy
+  call CS%pymodule%destroy
+  call CS%paths%destroy
  
   call forpy_finalize
 
