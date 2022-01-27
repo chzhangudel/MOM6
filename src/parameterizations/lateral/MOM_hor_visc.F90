@@ -186,7 +186,7 @@ type, public :: hor_visc_CS ; private
                                    !! the lateral viscous accelerations.
   character(len=200) :: &
     python_dir, & !< default = ".". The directory in which Python scripts are found.
-    python_file   !< default = "forpy"
+    python_file   !< default = "pymodule"
                   !! The Python script to update the lateral viscous accelerations.
 
   type(diag_ctrl), pointer :: diag => NULL() !< structure to regulate diagnostics
@@ -2390,7 +2390,7 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   CS%python_dir = slasher(CS%python_dir)
   call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file,  &
   "The name of the Python script for updating the lateral viscous acceleration.", &
-  default="forpy")
+  default="pymodule")
   CS%python_file = trim(CS%python_file)
   if (CS%use_hor_visc_python) call forpy_run_python_init &
                               (CS%python,trim(CS%python_dir),trim(CS%python_file))!Cheng
