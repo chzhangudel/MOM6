@@ -26,6 +26,7 @@ use MOM_variables,             only : accel_diag_ptrs
 use forpy_util,                only : python_interface !Cheng
 use forpy_util,                only : forpy_run_python !Cheng
 use forpy_util,                only : forpy_run_python_init,forpy_run_python_finalize !Cheng
+use forpy_util,                only : CNN_CS,CNN_init !Cheng
 
 implicit none ; private
 
@@ -182,6 +183,7 @@ type, public :: hor_visc_CS ; private
     Re_Ah_const_xy      !< Biharmonic metric-dependent constants [L3 ~> m3]
 
   type(python_interface) :: python !< Python interface object !Cheng
+  type(CNN_CS)           :: CNN    !< Control structure for CNN !Cheng
   logical :: use_hor_visc_python   !< If true, use a python script to update 
                                    !! the lateral viscous accelerations.
   character(len=200) :: &
@@ -1698,8 +1700,8 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     if (CS%id_diffu_visc_rem > 0) call post_product_u(CS%id_diffu_visc_rem, diffu, ADp%visc_rem_u, G, nz, CS%diag)
     if (CS%id_diffv_visc_rem > 0) call post_product_v(CS%id_diffv_visc_rem, diffv, ADp%visc_rem_v, G, nz, CS%diag)
   endif
-
-  if (CS%use_hor_visc_python) call forpy_run_python(CS%python,diffu,diffv) !Cheng
+  
+  if (CS%use_hor_visc_python) call forpy_run_python(u, v, G, GV, CS%python, CS%CNN) !Cheng
 
 end subroutine horizontal_viscosity
 
@@ -2394,6 +2396,7 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   CS%python_file = trim(CS%python_file)
   if (CS%use_hor_visc_python) call forpy_run_python_init &
                               (CS%python,trim(CS%python_dir),trim(CS%python_file))!Cheng
+  if (CS%use_hor_visc_python) call CNN_init(G,CS%CNN) !Cheng
   
 
   ! Register fields for output from this module.
