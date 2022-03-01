@@ -90,7 +90,7 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> Send a variable to a python script and output the results
-subroutine forpy_run_python(u, v, G, GV, CS, CNN)
+subroutine forpy_run_python(u, v, diffu, diffv, G, GV, CS, CNN)
   type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
   type(python_interface),        intent(in)  :: CS     !< Python interface object
@@ -99,12 +99,19 @@ subroutine forpy_run_python(u, v, G, GV, CS, CNN)
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
                                  intent(in)  :: v      !< The meridional velocity [L T-1 ~> m s-1].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
+                                 intent(inout) :: diffu  !< Zonal acceleration due to convergence of
+                                                         !! along-coordinate stress tensor [L T-2 ~> m s-2]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
+                                 intent(inout) :: diffv  !< Meridional acceleration due to convergence
+                                                         !! of along-coordinate stress tensor [L T-2 ~> m s-2].
   ! Local Variables
   real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
                                     :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
                                     :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
-  real ALLOCABLE_, dimension(:,:,:,:) :: out_uv ! Output from CNN including u_mean, v_mean, u_std and v_std. 
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sx,  & ! CNN output Sx
+                                               Sy     ! CNN output Sy
   integer :: i, j, k
   integer :: is, ie, js, je, nz
   integer :: isdw, iedw, jsdw, jedw
@@ -117,38 +124,39 @@ subroutine forpy_run_python(u, v, G, GV, CS, CNN)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  ALLOC_(out_uv(1,4,ie-is+1,je-js+1))  ! Varies with CNN
 
-  WH_u = 0.0; WH_v = 0.0;
+  WH_u = 1.0; WH_v = 1.0;
   do k=1,nz
     do j=js,je ; do i=is,ie
       WH_u(i,j,k) = 0.5*( u(I-1,j,k) + u(I,j,k) ) ! Copy the computational section from u into cell center
+!      WH_u(i,j,k) = 1.0
     enddo ; enddo
     do j=js,je ; do i=is,ie
       WH_v(i,j,k) = 0.5*( v(i,J-1,k) + v(i,J,k) ) ! Copy the computational section from v into cell center
+!      WH_v(i,j,k) = 1.0
     enddo ; enddo
   enddo
 
-  open(10,file='WH_u0')
-  do j = jsdw,jedw
-    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
-  enddo
-  close(10)
+!  open(10,file='WH_u0')
+!  do j = jsdw,jedw
+!    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
+!  enddo
+!  close(10)
 
 !  call pass_vector(WH_u, CNN_Domain, BGRID_NE) ! Update the wide halos of WH_u WH_v
   call pass_var(WH_u, CNN%CNN_Domain)
   call pass_var(WH_v, CNN%CNN_Domain)
 
-  open(10,file='WH_u')
-  do j = jsdw,jedw
-    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
-  enddo
-  close(10)
-  100 FORMAT(5000es15.4)
+!  open(10,file='WH_u')
+!  do j = jsdw,jedw
+!    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
+!  enddo
+!  close(10)
+!  100 FORMAT(5000es15.4)
 
   ! Covert input into Forpy Numpy Arrays 
-  ierror = ndarray_create(u_py, WH_u(:,:,1))
-  ierror = ndarray_create(v_py, WH_v(:,:,1))
+  ierror = ndarray_create(u_py, WH_u)
+  ierror = ndarray_create(v_py, WH_v)
   if (ierror/=0) then; call err_print; endif
 
   ! Create Python Argument 
@@ -163,7 +171,7 @@ subroutine forpy_run_python(u, v, G, GV, CS, CNN)
   if (ierror/=0) then; call err_print; endif
   ierror = cast(out_arr, obj)
   if (ierror/=0) then; call err_print; endif
-  ierror = out_arr%get_data(out_for, order='F')
+  ierror = out_arr%get_data(out_for, order='C')
   if (ierror/=0) then; call err_print; endif
 
   ! Destroy Objects
@@ -173,18 +181,34 @@ subroutine forpy_run_python(u, v, G, GV, CS, CNN)
   call obj%destroy
   call args%destroy
 
-  ! Output
-  out_uv = out_for ! out_uv has index (1,4,ni,nj)
- 
-
-  open(10,file='u_mean')
-  do j = js,je
-    write(10,100) (out_uv(1,1,i,j),i=is,ie)
-  !  print *, j,out_uv(1,1,20,j)
+  ! Output (out_for in C order has index (nk,nj,ni))
+                  ! in F order has index (ni,nj,nk)
+  Sx = 0.0; Sy = 0.0;
+  do k=1,nz
+    do j=js,je ; do i=is,ie
+      Sx(i,j,k) = out_for(k,j-js+1,i-is+1,1) ! if order='C'
+      ! Sx(i,j,k) = out_for(1,i-is+1,j-js+1,k) ! if order='F'
+      Sy(i,j,k) = out_for(k,j-js+1,i-is+1,2)
+    enddo ; enddo
   enddo
-  close(10)
+  call pass_var(Sx, G%domain)
+  call pass_var(Sy, G%domain)
+ 
+  do k=1,nz
+    do j=js,je ; do I=is-1,ie
+      diffu(I,j,k) = diffu(I,j,k) + 0.5*(Sx(i,j,k) + Sx(i+1,j,k)) ! Update diffu with Sx
+    enddo ; enddo
+    do J=js-1,je ; do i=is,ie
+      diffv(i,J,k) = diffv(i,J,k) + 0.5*(Sy(i,j,k) + Sy(i,j+1,k)) ! Update diffv with Sy
+    enddo ; enddo
+  enddo
 
-  DEALLOC_(out_uv)
+!  open(10,file='Sx')
+!  do j = G%jsd,G%jed
+!    write(10,100) (Sx(i,j,1),i=G%isd,G%ied)
+!  enddo
+!  close(10)
+
 !  stop'debugging!'
 
 end subroutine forpy_run_python

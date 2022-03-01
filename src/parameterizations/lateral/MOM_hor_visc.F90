@@ -1701,7 +1701,7 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     if (CS%id_diffv_visc_rem > 0) call post_product_v(CS%id_diffv_visc_rem, diffv, ADp%visc_rem_v, G, nz, CS%diag)
   endif
   
-  if (CS%use_hor_visc_python) call forpy_run_python(u, v, G, GV, CS%python, CS%CNN) !Cheng
+  if (CS%use_hor_visc_python) call forpy_run_python(u, v, diffu, diffv, G, GV, CS%python, CS%CNN) !Cheng
 
 end subroutine horizontal_viscosity
 
