@@ -6,7 +6,7 @@ import subgrid
 import time
 
 # GPU setup
-args_no_cuda = True
+args_no_cuda = False #True when manually turn off cuda
 use_cuda = not args_no_cuda and torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
 print('device for inference is',device)
@@ -27,13 +27,13 @@ def MOM6_testNN(u,v):
    x = x.astype(np.float32)
    x = x.transpose((3,0,1,2)) # new the shape is (4,ni,nj,nk)
 #    print(x.shape)
-   x = torch.tensor(x)
+   x = torch.from_numpy(x) # quite faster than x = torch.tensor(x)
    if use_cuda:
        x = x.to(device)
    with torch.no_grad():
-       start_time = time.time()
+       # start_time = time.time()
        out = nn(x)
-       end_time = time.time()
+       # end_time = time.time()
    if use_cuda:
        out = out.to('cpu')
    out = out.numpy().astype(np.float64)
@@ -64,9 +64,9 @@ def MOM6_testNN(u,v):
    np.savetxt('Sx.txt',Sxy[0,:,:,0])
    """
    # end_time = time.time()
-   print("--- %s seconds for CNN ---" % (end_time - start_time))
+   # print("--- %s seconds for CNN ---" % (end_time - start_time))
    # print(nn)
-   print(Sxy.shape)
+   # print(Sxy.shape)
    return Sxy 
 
 # if __name__ == '__main__':

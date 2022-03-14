@@ -10,6 +10,7 @@ use forpy_mod,                 only : forpy_initialize,get_sys_path,import_py,pr
 use forpy_mod,                 only : ndarray_create,tuple_create,call_py,cast
 use forpy_mod,                 only : forpy_finalize
 use iso_fortran_env,           only : real64
+!use MOM_coms,                  only : PE_here
 
 implicit none ; private
 
@@ -121,11 +122,17 @@ subroutine forpy_run_python(u, v, diffu, diffv, G, GV, CS, CNN)
   type(object)  :: obj                    !< return objects
   type(tuple)   :: args                   !< input arguments for the Python module
   real, dimension(:,:,:,:), pointer :: out_for  !< outputs from Python module
+!  integer :: current_pe
+!  CHARACTER(LEN=80)::FILE_NAME=' '
+!  CHARACTER(LEN=80)::TMP_NAME=' '
+
+!  current_pe = PE_here()
+!  print*, 'current PE is ',current_pe 
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
 
-  WH_u = 1.0; WH_v = 1.0;
+  WH_u = 0.0; WH_v = 0.0;
   do k=1,nz
     do j=js,je ; do i=is,ie
       WH_u(i,j,k) = 0.5*( u(I-1,j,k) + u(I,j,k) ) ! Copy the computational section from u into cell center
@@ -137,7 +144,9 @@ subroutine forpy_run_python(u, v, diffu, diffv, G, GV, CS, CNN)
     enddo ; enddo
   enddo
 
-!  open(10,file='WH_u0')
+!  write(file_name(1:1),'(I1)')current_pe 
+!  TMP_NAME = 'WH_u0_'//TRIM(FILE_NAME)
+!  open(10,file=TMP_NAME)
 !  do j = jsdw,jedw
 !    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
 !  enddo
@@ -147,7 +156,8 @@ subroutine forpy_run_python(u, v, diffu, diffv, G, GV, CS, CNN)
   call pass_var(WH_u, CNN%CNN_Domain)
   call pass_var(WH_v, CNN%CNN_Domain)
 
-!  open(10,file='WH_u')
+!  TMP_NAME = 'WH_u_'//TRIM(FILE_NAME)
+!  open(10,file=TMP_NAME)
 !  do j = jsdw,jedw
 !    write(10,100) (WH_u(i,j,1),i=isdw,iedw)
 !  enddo
