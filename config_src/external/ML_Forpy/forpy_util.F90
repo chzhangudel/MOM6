@@ -61,6 +61,7 @@ type, public :: CNN_CS ; private
   integer :: iedw !< The upper i-memory limit for the wide halo arrays.
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
+  integer :: CNN_halo_size  !< Halo size at each side of subdomains
 
   logical :: CNN_BT    !< If true, momentum forcing from CNN is barotropic.
 
@@ -82,12 +83,8 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
   type(diag_ctrl), target,       intent(inout) :: diag  !< Diagnostics structure.
   type(CNN_CS),                  intent(inout) :: CS    !< Control structure for CNN
   ! Local Variables
-  integer :: wd_halos(2) = (10,10) ! Varies with CNN
+  integer :: wd_halos(2) ! Varies with CNN
   character(len=40)  :: mdl = "MOM_CNN"  ! module name
-
-  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
-  CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
-  CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
   ! Register fields for output from this module.
   CS%diag => diag
@@ -103,6 +100,15 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
   call get_param(param_file, mdl, "CNN_BT", CS%CNN_BT, &
       "If true, momentum forcing from CNN is barotropic, otherwise baroclinic (default).", &
       default=.false.)
+  call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
+      "Halo size at each side of subdomains, depends on CNN architecture.", & 
+      units="nondim", default=10)
+
+  wd_halos(1) = CS%CNN_halo_size
+  wd_halos(2) = CS%CNN_halo_size
+  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
+  CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
+  CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
 end subroutine CNN_init
 
