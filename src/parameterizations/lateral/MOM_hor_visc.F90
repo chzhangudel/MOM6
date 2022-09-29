@@ -23,6 +23,10 @@ use MOM_open_boundary,         only : OBC_DIRECTION_N, OBC_DIRECTION_S, OBC_NONE
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_variables,             only : accel_diag_ptrs
+use forpy_util,                only : python_interface !Cheng
+use forpy_util,                only : forpy_run_python !Cheng
+use forpy_util,                only : forpy_run_python_init,forpy_run_python_finalize !Cheng
+use forpy_util,                only : CNN_CS,CNN_init !Cheng
 
 implicit none ; private
 
@@ -178,6 +182,15 @@ type, public :: hor_visc_CS ; private
     Biharm_const_xy,  & !< Biharmonic metric-dependent constants [L4 ~> m4]
     Biharm_const2_xy, & !< Biharmonic metric-dependent constants [T L4 ~> s m4]
     Re_Ah_const_xy      !< Biharmonic metric-dependent constants [L3 ~> m3]
+
+  type(python_interface) :: python !< Python interface object !Cheng
+  type(CNN_CS)           :: CNN    !< Control structure for CNN !Cheng
+  logical :: use_hor_visc_python   !< If true, use a python script to update 
+                                   !! the lateral viscous accelerations.
+  character(len=200) :: &
+    python_dir, & !< default = ".". The directory in which Python scripts are found.
+    python_file   !< default = "pymodule"
+                  !! The Python script to update the lateral viscous accelerations.
 
   type(diag_ctrl), pointer :: diag => NULL() !< structure to regulate diagnostics
 
@@ -1668,6 +1681,8 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     if (CS%id_diffu_visc_rem > 0) call post_product_u(CS%id_diffu_visc_rem, diffu, ADp%visc_rem_u, G, nz, CS%diag)
     if (CS%id_diffv_visc_rem > 0) call post_product_v(CS%id_diffv_visc_rem, diffv, ADp%visc_rem_v, G, nz, CS%diag)
   endif
+  
+  if (CS%use_hor_visc_python) call forpy_run_python(u, v, h, diffu, diffv, G, GV, CS%python, CS%CNN) !Cheng
 
 end subroutine horizontal_viscosity
 
@@ -2365,6 +2380,22 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
       call Bchksum(CS%Ah_Max_xy, "Ah_Max_xy", G%HI, haloshift=0, scale=US%L_to_m**4*US%s_to_T)
     endif
   endif
+
+  call get_param(param_file, mdl, "USE_HOR_VISC_PYTHON", CS%use_hor_visc_python, & !Cheng
+  "Invoke a python script to update the lateral viscous accelerations.", &
+  default=.false.)
+  call get_param(param_file, mdl, "PYTHON_DIR", CS%python_dir,&
+  "The directory in which Python scripts are found.", default=".")
+  CS%python_dir = slasher(CS%python_dir)
+  call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file,  &
+  "The name of the Python script for updating the lateral viscous acceleration.", &
+  default="pymodule")
+  CS%python_file = trim(CS%python_file)
+  if (CS%use_hor_visc_python) call forpy_run_python_init &
+                              (CS%python,trim(CS%python_dir),trim(CS%python_file))!Cheng
+  if (CS%use_hor_visc_python) call CNN_init(Time, G, GV, US, param_file, diag, CS%CNN) !Cheng
+  
+
   ! Register fields for output from this module.
   CS%id_normstress = register_diag_field('ocean_model', 'NoSt', diag%axesTL, Time, &
       'Normal Stress', 's-1', conversion=US%s_to_T)
@@ -2656,6 +2687,7 @@ subroutine hor_visc_end(CS)
     DEALLOC_(CS%n1n1_m_n2n2_h)
     DEALLOC_(CS%n1n1_m_n2n2_q)
   endif
+  if (CS%use_hor_visc_python) call forpy_run_python_finalize(CS%python)!Cheng
 end subroutine hor_visc_end
 !> \namespace mom_hor_visc
 !!

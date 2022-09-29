@@ -142,6 +142,30 @@ subroutine basin_builder_topography(D, G, param_file, max_depth)
         lat = G%geoLatT(i,j)
         D(i,j) = min( D(i,j), circ_scurve_ridge(lon, lat, pars(1), pars(2), pars(3), pars(4), pars(5)) )
       enddo ; enddo
+    elseif (trim(lowercase(funcs)) == 'spoon') then !Cheng
+      call get_param(param_file, mdl, pname2, pars(1:6), &
+                     "SPOON parameters: starting longitude, ending longitude, "//&
+                     "starting latitude, ending latitude, edge depth, exponential decay scale.", &
+                     units="degrees_N,degrees_N,degrees_E,degrees_E,m,m", &
+                     fail_if_missing=.true.)
+      pars(5) = pars(5) / max_depth
+      do j=G%jsc,G%jec ; do i=G%isc,G%iec
+        lon = G%geoLonT(i,j)
+        lat = G%geoLatT(i,j)
+        D(i,j) = min( D(i,j), spoon_shape(lon, lat, pars(1), pars(2), pars(3), &
+                                                    pars(4), pars(5), pars(6), G%Rad_Earth_L) )
+      enddo ; enddo
+      elseif (trim(lowercase(funcs)) == 'box') then !Cheng
+        call get_param(param_file, mdl, pname2, pars(1:6), &
+                       "BOX parameters: starting longitude, ending longitude, "//&
+                       "starting latitude, ending latitude.", &
+                       units="degrees_N,degrees_N,degrees_E,degrees_E", &
+                       fail_if_missing=.true.)
+        do j=G%jsc,G%jec ; do i=G%isc,G%iec
+          lon = G%geoLonT(i,j)
+          lat = G%geoLatT(i,j)
+          D(i,j) = min( D(i,j), box_shape(lon, lat, pars(1), pars(2), pars(3), pars(4)) )
+        enddo ; enddo
     else
       call MOM_error(FATAL, "basin_builder.F90, basin_builer_topography:\n"//&
                      "Unrecognized function "//trim(funcs))
@@ -331,5 +355,41 @@ real function circ_scurve_ridge(lon, lat, lon0, lat0, ring_radius, ring_thicknes
   r = r * ridge_height ! 0 .. frac_ridge_height
   circ_scurve_ridge = 1. - r ! nondim depths (1-frac_ridge_height) .. 1
 end function circ_scurve_ridge
+
+!> A similar shape to 'bowl', but with an vertical wall at the southern face. (Cheng)
+real function spoon_shape(lon, lat, lon0, lon1, lat0, lat1, Dedge, expdecay, erad)
+  real, intent(in) :: lon     !< Longitude [degrees_E]
+  real, intent(in) :: lat     !< Latitude [degrees_N]
+  real, intent(in) :: lon0    !< Longitude of spoon start [degrees_E]
+  real, intent(in) :: lon1    !< Longitude of spoon end [degrees_E]
+  real, intent(in) :: lat0    !< Latitude of spoon start [degrees_N]
+  real, intent(in) :: lat1    !< Latitude of spoon end [degrees_N]
+  real, intent(in) :: expdecay!< A decay scale of associated with the sloping boundaries [L ~> m]
+  real, intent(in) :: dedge   !< The depth at the basin edge [Z ~> m]
+  real, intent(in) :: erad    !< The radius of the Earth [m]
+  real :: r,PI
+
+  PI = 4.0*atan(1.0)
+  r = (1 - dedge) / ((1.0 - exp(-0.5*(lat1-lat0)*erad*PI/(180.0*expdecay)))**2.0)
+  spoon_shape = dedge + r* (sin(PI * (lon - lon0) / (lon1-lon0)) * &
+             (1.0 - exp((lat - lat1)*erad*PI / (180.0*expdecay)) )) ! nondim depths
+end function spoon_shape
+
+!> An "box profile". (Cheng)
+real function box_shape(lon, lat, lon0, lon1, lat0, lat1)
+  real, intent(in) :: lon     !< Longitude [degrees_E]
+  real, intent(in) :: lat     !< Latitude [degrees_N]
+  real, intent(in) :: lon0    !< Longitude of box start [degrees_E]
+  real, intent(in) :: lon1    !< Longitude of box end [degrees_E]
+  real, intent(in) :: lat0    !< Latitude of box start [degrees_N]
+  real, intent(in) :: lat1    !< Latitude of box end [degrees_N]
+  real :: r
+
+  r = 1.0
+  if (lon>=lon0.and.lon<lon1.and.lat>=lat0.and.lat<=lat1) then
+    r = 0.0
+  endif
+  box_shape = r ! nondim depths
+end function box_shape
 
 end module basin_builder
