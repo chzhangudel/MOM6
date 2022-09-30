@@ -23,10 +23,9 @@ use MOM_open_boundary,         only : OBC_DIRECTION_N, OBC_DIRECTION_S, OBC_NONE
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_variables,             only : accel_diag_ptrs
-use forpy_util,                only : python_interface !Cheng
-use forpy_util,                only : forpy_run_python !Cheng
-use forpy_util,                only : forpy_run_python_init,forpy_run_python_finalize !Cheng
-use forpy_util,                only : CNN_CS,CNN_init !Cheng
+use MOM_forpy_interface,       only : python_interface !Cheng
+use MOM_forpy_interface,       only : forpy_run_python_init,forpy_run_python_finalize !Cheng
+use MOM_CNN_GZ21,              only : CNN_CS,CNN_init,CNN_inference !Cheng
 
 implicit none ; private
 
@@ -1682,7 +1681,7 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     if (CS%id_diffv_visc_rem > 0) call post_product_v(CS%id_diffv_visc_rem, diffv, ADp%visc_rem_v, G, nz, CS%diag)
   endif
   
-  if (CS%use_hor_visc_python) call forpy_run_python(u, v, h, diffu, diffv, G, GV, CS%python, CS%CNN) !Cheng
+  if (CS%use_hor_visc_python) call CNN_inference(u, v, h, diffu, diffv, G, GV, CS%python, CS%CNN) !Cheng
 
 end subroutine horizontal_viscosity
 
