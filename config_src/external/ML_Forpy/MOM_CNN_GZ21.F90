@@ -11,9 +11,9 @@ use MOM_diag_mediator,         only : post_data,register_diag_field
 use MOM_diag_mediator,         only : diag_ctrl, time_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param,param_file_type
-use MOM_forpy_interface,       only : forpy_run_python
+use Forpy_interface,           only : forpy_run_python, python_interface
 
-implicit none ; private
+implicit none; private
 
 #include <MOM_memory.h>
 #ifdef STATIC_MEMORY_
@@ -30,6 +30,10 @@ implicit none ; private
 #  define SZJW_(G)  NJMEMW_
 #  define SZIBW_(G) NIMEMBW_
 #  define SZJBW_(G) NJMEMBW_
+#  define SZIWB_(G)  1-WHALOI_
+#  define SZIWE_(G)  NIMEM_+WHALOI_
+#  define SZJWB_(G)  1-WHALOJ_
+#  define SZJWE_(G)  NJMEM_+WHALOJ_
 #else
 #  define NIMEMW_   :
 #  define NJMEMW_   :
@@ -39,6 +43,10 @@ implicit none ; private
 #  define SZJW_(G)  G%jsdw:G%jedw
 #  define SZIBW_(G) G%isdw-1:G%iedw
 #  define SZJBW_(G) G%jsdw-1:G%jedw
+#  define SZIWB_(G)  G%isdw
+#  define SZIWE_(G)  G%iedw
+#  define SZJWB_(G)  G%jsdw
+#  define SZJWE_(G)  G%jedw
 #endif
 
 public :: CNN_init,CNN_inference
@@ -102,9 +110,10 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CNN)
+subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
+  type(python_interface),        intent(in)  :: CS     !< Python interface object
   type(CNN_CS),                  intent(in)  :: CNN    !< Control structure for CNN
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
@@ -130,6 +139,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CNN)
   integer :: i, j, k
   integer :: is, ie, js, je, nz, nztemp
   integer :: isdw, iedw, jsdw, jedw
+  integer :: wh_size_in(4)  ! Subdomain size with wide halos for input
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
@@ -154,7 +164,11 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CNN)
   call pass_var(WH_v, CNN%CNN_Domain)
 
   ! run Python script for CNN inference
-  call forpy_run_python(WH_u, WH_v, Sx, Sy, G, GV, CS, CNN)
+  wh_size_in(1) = SZIWB_(CNN)
+  wh_size_in(2) = SZIWE_(CNN)
+  wh_size_in(3) = SZJWB_(CNN)
+  wh_size_in(4) = SZJWE_(CNN)
+  call forpy_run_python(WH_u, WH_v, Sx, Sy, G, GV, CS, wh_size_in, CNN%CNN_BT)
  
   fx = 0.0; fy = 0.0;
   do k=1,nz
@@ -180,7 +194,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CNN)
   if (CNN%id_CNNv>0)   call post_data(CNN%id_CNNv, fy, CNN%diag)
   if (CNN%id_KE_CNN>0) call compute_energy_source(u, v, h, fx, fy, G, GV, CNN)
 
-end subroutine forpy_run_python
+end subroutine CNN_inference
 
 ! This is copy-paste from MOM_diagnostics.F90, specifically 1125 line
 subroutine compute_energy_source(u, v, h, fx, fy, G, GV, CS)

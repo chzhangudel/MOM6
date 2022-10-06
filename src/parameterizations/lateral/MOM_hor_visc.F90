@@ -23,8 +23,8 @@ use MOM_open_boundary,         only : OBC_DIRECTION_N, OBC_DIRECTION_S, OBC_NONE
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_variables,             only : accel_diag_ptrs
-use MOM_forpy_interface,       only : python_interface !Cheng
-use MOM_forpy_interface,       only : forpy_run_python_init,forpy_run_python_finalize !Cheng
+use Forpy_interface,       only : python_interface !Cheng
+use Forpy_interface,       only : forpy_run_python_init,forpy_run_python_finalize !Cheng
 use MOM_CNN_GZ21,              only : CNN_CS,CNN_init,CNN_inference !Cheng
 
 implicit none ; private
