@@ -30,10 +30,6 @@ implicit none; private
 #  define SZJW_(G)  NJMEMW_
 #  define SZIBW_(G) NIMEMBW_
 #  define SZJBW_(G) NJMEMBW_
-#  define SZIWB_(G)  1-WHALOI_
-#  define SZIWE_(G)  NIMEM_+WHALOI_
-#  define SZJWB_(G)  1-WHALOJ_
-#  define SZJWE_(G)  NJMEM_+WHALOJ_
 #else
 #  define NIMEMW_   :
 #  define NJMEMW_   :
@@ -43,10 +39,6 @@ implicit none; private
 #  define SZJW_(G)  G%jsdw:G%jedw
 #  define SZIBW_(G) G%isdw-1:G%iedw
 #  define SZJBW_(G) G%jsdw-1:G%jedw
-#  define SZIWB_(G)  G%isdw
-#  define SZIWE_(G)  G%iedw
-#  define SZJWB_(G)  G%jsdw
-#  define SZJWE_(G)  G%jedw
 #endif
 
 public :: CNN_init,CNN_inference
@@ -139,7 +131,6 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   integer :: i, j, k
   integer :: is, ie, js, je, nz, nztemp
   integer :: isdw, iedw, jsdw, jedw
-  integer :: wh_size_in(4)  ! Subdomain size with wide halos for input
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
@@ -164,11 +155,11 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   call pass_var(WH_v, CNN%CNN_Domain)
 
   ! run Python script for CNN inference
-  wh_size_in(1) = SZIWB_(CNN)
-  wh_size_in(2) = SZIWE_(CNN)
-  wh_size_in(3) = SZJWB_(CNN)
-  wh_size_in(4) = SZJWE_(CNN)
-  call forpy_run_python(WH_u, WH_v, Sx, Sy, G, GV, CS, wh_size_in, CNN%CNN_BT)
+  call forpy_run_python(WH_u, WH_v, Sx, Sy, CS, CNN%CNN_BT)
+
+  ! Update the halos of Sx Sy
+  call pass_var(Sx, G%domain)
+  call pass_var(Sy, G%domain)
  
   fx = 0.0; fy = 0.0;
   do k=1,nz

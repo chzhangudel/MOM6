@@ -1,12 +1,8 @@
 module Forpy_interface
 
-use MOM_grid,                  only : ocean_grid_type
-use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_error_handler,         only : MOM_error, WARNING
 
 implicit none; private
-
-#include <MOM_memory.h>
 
 public :: forpy_run_python_init,forpy_run_python,forpy_run_python_finalize
 
@@ -28,25 +24,18 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> !> Send variables to a python script and output the results
-subroutine forpy_run_python(WH_u, WH_v, Sx, Sy, G, GV, CS, wh_size_in, BT)
-    type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
-    type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
+subroutine forpy_run_python(in1, in2, out1, out2, CS, TopLayer)
     type(python_interface),        intent(in)  :: CS     !< Python interface object
   ! Local Variables
-    integer, intent(in) :: wh_size_in(4)  ! Subdomain size with wide halos for input
-    logical, intent(in) :: BT             !< If true, momentum forcing from CNN is barotropic.
-    real, dimension(wh_size_in(1):wh_size_in(2),&
-                    wh_size_in(3):wh_size_in(4),&
-                    SZK_(GV)), &
-                                    intent(in) :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
-    real, dimension(wh_size_in(1):wh_size_in(2),&
-                    wh_size_in(3):wh_size_in(4),&
-                    SZK_(GV)), &
-                                    intent(in) :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
-    real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                    intent(out) :: Sx      ! CNN output Sx
-    real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                    intent(out) :: Sy      ! CNN output Sy
+    logical, intent(in) :: TopLayer             !< If true, only top layer is used.
+    real, dimension(:,:,:), &
+                                    intent(in) :: in1     ! First input variable.
+    real, dimension(:,:,:), &
+                                    intent(in) :: in2     ! second input variable.
+    real, dimension(:,:,:), &
+                                    intent(inout) :: out1      ! First output variable.
+    real, dimension(:,:,:), &
+                                    intent(inout) :: out2      ! second output variable.
 
 end subroutine forpy_run_python 
 
