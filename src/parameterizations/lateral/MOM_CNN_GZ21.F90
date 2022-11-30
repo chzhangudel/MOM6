@@ -128,6 +128,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
                                                Sy     ! CNN output Sy
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fx     ! CNN output Sx at cell faces
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fy     ! CNN output Sy at cell faces
+  real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
+  real, dimension(2,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
+
   integer :: i, j, k
   integer :: is, ie, js, je, nz, nztemp
   integer :: isdw, iedw, jsdw, jedw
@@ -154,8 +157,14 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   call pass_var(WH_u, CNN%CNN_Domain)
   call pass_var(WH_v, CNN%CNN_Domain)
 
-  ! run Python script for CNN inference
-  call forpy_run_python(WH_u, WH_v, Sx, Sy, CS, CNN%CNN_BT)
+  ! Combine arrays for CNN input
+  WH_uv(1,:,:,:)=WH_u; WH_uv(2,:,:,:)=WH_v
+
+  ! Run Python script for CNN inference
+  call forpy_run_python(WH_uv, Sxy, CS, CNN%CNN_BT)
+
+  !Extract data from CNN output
+  Sx=Sxy(1,:,:,:); Sy=Sxy(2,:,:,:)
 
   ! Update the halos of Sx Sy
   call pass_var(Sx, G%domain)
