@@ -57,8 +57,8 @@ type, public :: CNN_CS ; private
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
   integer :: id_CNNu = -1, id_CNNv = -1, id_KE_CNN = -1
-  integer :: id_CNNumean = -1, id_CNNvmean = -1
-  integer :: id_CNNustd = -1, id_CNNvstd = -1
+  integer :: id_Sxmean = -1, id_Symean = -1
+  integer :: id_Sxstd = -1, id_Systd = -1
   !>@}
 end type CNN_CS
 
@@ -87,14 +87,14 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
   CS%id_KE_CNN = register_diag_field('ocean_model', 'KE_CNN', diag%axesTL, Time, &
       'Kinetic Energy Source from Horizontal Viscosity of CNN model', &
       'm3 s-3', conversion=GV%H_to_m*(US%L_T_to_m_s**2)*US%s_to_T)
-  CS%id_CNNumean = register_diag_field('ocean_model', 'CNNumean', diag%axesCuL, Time, &
+  CS%id_Sxmean = register_diag_field('ocean_model', 'Sxmean', diag%axesTL, Time, &
       'Zonal Acceleration from CNN model mean part', 'm s-2', conversion=US%L_T2_to_m_s2)
-  CS%id_CNNvmean = register_diag_field('ocean_model', 'CNNvmean', diag%axesCvL, Time, &
+  CS%id_Symean = register_diag_field('ocean_model', 'Symean', diag%axesTL, Time, &
       'Meridional Acceleration from CNN model mean part', 'm s-2', conversion=US%L_T2_to_m_s2)
-  CS%id_CNNustd = register_diag_field('ocean_model', 'CNNustd', diag%axesCuL, Time, &
+  CS%id_Sxstd = register_diag_field('ocean_model', 'Sxstd', diag%axesTL, Time, &
       'Zonal Acceleration from CNN model standard deviation part', &
       'm s-2', conversion=US%L_T2_to_m_s2)
-  CS%id_CNNvstd = register_diag_field('ocean_model', 'CNNvstd', diag%axesCvL, Time, &
+  CS%id_Systd = register_diag_field('ocean_model', 'Systd', diag%axesTL, Time, &
       'Meridional Acceleration from CNN model standard deviation part', &
       'm s-2', conversion=US%L_T2_to_m_s2)
       
@@ -136,18 +136,18 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
                                     :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
                                     :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sx,  & ! CNN output Sx
-                                               Sy     ! CNN output Sy
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sx,  &     ! CNN output Sx
+                                               Sy,  &     ! CNN output Sy
+                                               Sxmean,  & ! CNN output Sxmean
+                                               Symean,  & ! CNN output Symean
+                                               Sxstd,   & ! CNN output Sxstd
+                                               Systd      ! CNN output Systd
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fx     ! CNN output Sx at cell faces
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fy     ! CNN output Sy at cell faces
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sxmean,  & ! CNN output Sxmean
-                                               Symean     ! CNN output Symean
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fxmean     ! CNN output Sxmean at cell faces
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fymean     ! CNN output Symean at cell faces
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sxstd,  & ! CNN output Sxstd
-                                               Systd     ! CNN output Systd
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fxstd     ! CNN output Sxstd at cell faces
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fystd     ! CNN output Systd at cell faces
+  ! real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fxmean     ! CNN output Sxmean at cell faces
+  ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fymean     ! CNN output Symean at cell faces
+  ! real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fxstd     ! CNN output Sxstd at cell faces
+  ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fystd     ! CNN output Systd at cell faces
   real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
   real, dimension(6,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
 
@@ -178,6 +178,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   call pass_var(WH_v, CNN%CNN_Domain)
 
   ! Combine arrays for CNN input
+  WH_uv = 0.0
   do k=1,nztemp
     do j=jsdw,jedw ; do i=isdw,iedw 
       WH_uv(1,i,j,k) = WH_u(i,j,k)
@@ -186,9 +187,11 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   enddo
 
   ! Run Python script for CNN inference
-  call forpy_run_python(WH_uv, Sxy, CS, CNN%CNN_BT)
+  Sxy = 0.0
+  call forpy_run_python(WH_uv, Sxy, CS, CNN%CNN_BT, G)
 
   !Extract data from CNN output
+  Sx=0.0; Sy=0.0; Sxmean=0.0; Symean=0.0; Sxstd=0.0; Systd=0.0;
   do k=1,nztemp
     do j=js,je ; do i=is,ie 
       Sx(i,j,k) = Sxy(1,i,j,k)
@@ -201,36 +204,28 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   enddo
 
   ! Update the halos of Sx Sy
-  call pass_var(Sx, G%domain)
-  call pass_var(Sy, G%domain)
-  call pass_var(Sxmean, G%domain)
-  call pass_var(Symean, G%domain)
-  call pass_var(Sxstd, G%domain)
-  call pass_var(Systd, G%domain)
+  call pass_var(Sx, G%Domain)
+  call pass_var(Sy, G%Domain)
+  call pass_var(Sxmean, G%Domain)
+  call pass_var(Symean, G%Domain)
+  call pass_var(Sxstd, G%Domain)
+  call pass_var(Systd, G%Domain)
  
-  fx = 0.0; fy = 0.0; fxmean = 0.0; fymean = 0.0; fxstd = 0.0; fystd = 0.0
+  fx = 0.0; fy = 0.0; 
   do k=1,nz
     do j=js,je ; do I=is-1,ie
       if (CNN%CNN_BT) then
         fx(I,j,k) = 0.5*(Sx(i,j,1) + Sx(i+1,j,1))
-        fxmean(I,j,k) = 0.5*(Sxmean(i,j,1) + Sxmean(i+1,j,1))
-        fxstd(I,j,k) = 0.5*(Sxstd(i,j,1) + Sxstd(i+1,j,1))
       else
         fx(I,j,k) = 0.5*(Sx(i,j,k) + Sx(i+1,j,k))
-        fxmean(I,j,k) = 0.5*(Sxmean(i,j,k) + Sxmean(i+1,j,k))
-        fxstd(I,j,k) = 0.5*(Sxstd(i,j,k) + Sxstd(i+1,j,k))
       endif
       diffu(I,j,k) = diffu(I,j,k) + fx(I,j,k) ! Update diffu with Sx
     enddo ; enddo
     do J=js-1,je ; do i=is,ie
       if (CNN%CNN_BT) then
         fy(i,J,k) = 0.5*(Sy(i,j,1) + Sy(i,j+1,1))
-        fymean(i,J,k) = 0.5*(Symean(i,j,1) + Symean(i,j+1,1))
-        fystd(i,J,k) = 0.5*(Systd(i,j,1) + Systd(i,j+1,1))
       else
         fy(i,J,k) = 0.5*(Sy(i,j,k) + Sy(i,j+1,k))
-        fymean(i,J,k) = 0.5*(Symean(i,j,k) + Symean(i,j+1,k))
-        fystd(i,J,k) = 0.5*(Systd(i,j,k) + Systd(i,j+1,k))
       endif
       diffv(i,J,k) = diffv(i,J,k) + fy(i,J,k) ! Update diffv with Sy
     enddo ; enddo
@@ -238,10 +233,10 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
 
   if (CNN%id_CNNu>0)   call post_data(CNN%id_CNNu, fx, CNN%diag)
   if (CNN%id_CNNv>0)   call post_data(CNN%id_CNNv, fy, CNN%diag)
-  if (CNN%id_CNNumean>0)   call post_data(CNN%id_CNNumean, fxmean, CNN%diag)
-  if (CNN%id_CNNvmean>0)   call post_data(CNN%id_CNNvmean, fymean, CNN%diag)
-  if (CNN%id_CNNustd>0)   call post_data(CNN%id_CNNustd, fxstd, CNN%diag)
-  if (CNN%id_CNNvstd>0)   call post_data(CNN%id_CNNvstd, fystd, CNN%diag)
+  if (CNN%id_Sxmean>0)   call post_data(CNN%id_Sxmean, Sxmean, CNN%diag)
+  if (CNN%id_Symean>0)   call post_data(CNN%id_Symean, Symean, CNN%diag)
+  if (CNN%id_Sxstd>0)   call post_data(CNN%id_Sxstd, Sxstd, CNN%diag)
+  if (CNN%id_Systd>0)   call post_data(CNN%id_Systd, Systd, CNN%diag)
   if (CNN%id_KE_CNN>0) call compute_energy_source(u, v, h, fx, fy, G, GV, CNN)
 
 end subroutine CNN_inference
