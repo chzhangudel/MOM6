@@ -11,7 +11,11 @@ use MOM_diag_mediator,         only : post_data,register_diag_field
 use MOM_diag_mediator,         only : diag_ctrl, time_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param,param_file_type
+use MOM_string_functions,      only : lowercase
+use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOCK_ROUTINE
 use Forpy_interface,           only : forpy_run_python, python_interface
+use SmartSim_interface,        only : smartsim_run_python, smartsim_python_interface
+
 
 implicit none; private
 
@@ -60,6 +64,15 @@ type, public :: CNN_CS ; private
   integer :: id_Sxmean = -1, id_Symean = -1
   integer :: id_Sxstd = -1, id_Systd = -1
   !>@}
+
+  ! Clock ids
+  integer :: id_cnn_pre
+  integer :: id_cnn_inference   !< Clock id to time initialization of the client
+  integer :: id_cnn_post
+  integer :: id_cnn_post1
+  integer :: id_cnn_post2
+  integer :: id_cnn_post3
+  integer :: id_cnn_post4
 end type CNN_CS
 
 contains
@@ -111,14 +124,25 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
   CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
   CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
+  ! Set various clock ids
+  CS%id_cnn_pre         = cpu_clock_id('(CNN before inference)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_inference   = cpu_clock_id('(CNN total inference)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_post        = cpu_clock_id('(CNN after inference)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_post1       = cpu_clock_id('(CNN after inference 1)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_post2       = cpu_clock_id('(CNN after inference 2)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_post3       = cpu_clock_id('(CNN after inference 3)', grain=CLOCK_ROUTINE)
+  CS%id_cnn_post4       = cpu_clock_id('(CNN after inference 4)', grain=CLOCK_ROUTINE)
+
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
+subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python_bridge_lib)
   type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
-  type(python_interface),        intent(in)  :: CS     !< Python interface object
+  type(python_interface),        intent(in)  :: FP_CS  !< Forpy Python interface object
+  type(smartsim_python_interface),intent(in)  :: SS_CS  !< SmartSim Python interface object
   type(CNN_CS),                  intent(in)  :: CNN    !< Control structure for CNN
+  character(len=*),              intent(in)  :: python_bridge_lib !< The library used for language bridging
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
@@ -150,10 +174,13 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fystd     ! CNN output Systd at cell faces
   real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
   real, dimension(6,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
+  type(group_pass_type) :: pass_CNN
 
   integer :: i, j, k
   integer :: is, ie, js, je, nz, nztemp
   integer :: isdw, iedw, jsdw, jedw
+
+  call cpu_clock_begin(CNN%id_cnn_pre)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
@@ -188,9 +215,19 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
 
   ! Run Python script for CNN inference
   Sxy = 0.0
-  call forpy_run_python(WH_uv, Sxy, CS, CNN%CNN_BT, G)
+  call cpu_clock_end(CNN%id_cnn_pre)
+  call cpu_clock_begin(CNN%id_cnn_inference)
+  select case (lowercase(python_bridge_lib))
+  case("forpy")
+    call forpy_run_python(WH_uv, Sxy, FP_CS, CNN%CNN_BT, G)
+  case("smartsim")
+    call smartsim_run_python(WH_uv, Sxy, SS_CS, CNN%CNN_BT, CNN%CNN_halo_size)
+  end select
+  call cpu_clock_end(CNN%id_cnn_inference)
 
   !Extract data from CNN output
+  call cpu_clock_begin(CNN%id_cnn_post)
+  call cpu_clock_begin(CNN%id_cnn_post1)
   Sx=0.0; Sy=0.0; Sxmean=0.0; Symean=0.0; Sxstd=0.0; Systd=0.0;
   do k=1,nztemp
     do j=js,je ; do i=is,ie 
@@ -202,15 +239,26 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
       Systd(i,j,k) = Sxy(6,i,j,k)
     enddo ; enddo 
   enddo
+  call cpu_clock_end(CNN%id_cnn_post1)
 
   ! Update the halos of Sx Sy
-  call pass_var(Sx, G%Domain)
-  call pass_var(Sy, G%Domain)
-  call pass_var(Sxmean, G%Domain)
-  call pass_var(Symean, G%Domain)
-  call pass_var(Sxstd, G%Domain)
-  call pass_var(Systd, G%Domain)
+  call cpu_clock_begin(CNN%id_cnn_post2)
+  ! call pass_var(Sx, G%Domain)
+  ! call pass_var(Sy, G%Domain)
+  ! call pass_var(Sxmean, G%Domain)
+  ! call pass_var(Symean, G%Domain)
+  ! call pass_var(Sxstd, G%Domain)
+  ! call pass_var(Systd, G%Domain) 
+  call create_group_pass(pass_CNN,Sx,G%Domain)
+  call create_group_pass(pass_CNN,Sy,G%Domain)
+  call create_group_pass(pass_CNN,Sxmean,G%Domain)
+  call create_group_pass(pass_CNN,Symean,G%Domain)
+  call create_group_pass(pass_CNN,Sxstd,G%Domain)
+  call create_group_pass(pass_CNN,Systd,G%Domain)
+  call do_group_pass(pass_CNN,G%Domain)
+  call cpu_clock_end(CNN%id_cnn_post2)
  
+  call cpu_clock_begin(CNN%id_cnn_post3)
   fx = 0.0; fy = 0.0; 
   do k=1,nz
     do j=js,je ; do I=is-1,ie
@@ -230,7 +278,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
       diffv(i,J,k) = diffv(i,J,k) + fy(i,J,k) ! Update diffv with Sy
     enddo ; enddo
   enddo
+  call cpu_clock_end(CNN%id_cnn_post3)
 
+  call cpu_clock_begin(CNN%id_cnn_post4)
   if (CNN%id_CNNu>0)   call post_data(CNN%id_CNNu, fx, CNN%diag)
   if (CNN%id_CNNv>0)   call post_data(CNN%id_CNNv, fy, CNN%diag)
   if (CNN%id_Sxmean>0)   call post_data(CNN%id_Sxmean, Sxmean, CNN%diag)
@@ -238,6 +288,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, CS, CNN)
   if (CNN%id_Sxstd>0)   call post_data(CNN%id_Sxstd, Sxstd, CNN%diag)
   if (CNN%id_Systd>0)   call post_data(CNN%id_Systd, Systd, CNN%diag)
   if (CNN%id_KE_CNN>0) call compute_energy_source(u, v, h, fx, fy, G, GV, CNN)
+  call cpu_clock_end(CNN%id_cnn_post4)
+
+  call cpu_clock_end(CNN%id_cnn_post)
 
 end subroutine CNN_inference
 

@@ -23,8 +23,11 @@ use MOM_open_boundary,         only : OBC_DIRECTION_N, OBC_DIRECTION_S, OBC_NONE
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_variables,             only : accel_diag_ptrs
+use MOM_string_functions,      only : lowercase
 use Forpy_interface,           only : python_interface !Cheng
 use Forpy_interface,           only : forpy_run_python_init,forpy_run_python_finalize !Cheng
+use SmartSim_interface,        only : smartsim_python_interface !Cheng
+use SmartSim_interface,        only : smartsim_run_python_init,smartsim_run_python_finalize !Cheng
 use MOM_CNN_GZ21,              only : CNN_CS,CNN_init,CNN_inference !Cheng
 
 implicit none ; private
@@ -183,13 +186,15 @@ type, public :: hor_visc_CS ; private
     Re_Ah_const_xy      !< Biharmonic metric-dependent constants [L3 ~> m3]
 
   type(python_interface) :: python !< Python interface object !Cheng
+  type(smartsim_python_interface) :: smartsim_python !< Python interface object !Cheng
   type(CNN_CS)           :: CNN    !< Control structure for CNN !Cheng
   logical :: use_hor_visc_python   !< If true, use a python script to update 
                                    !! the lateral viscous accelerations.
   character(len=200) :: &
     python_dir, & !< default = ".". The directory in which Python scripts are found.
-    python_file   !< default = "pymodule"
+    python_file,& !< default = "pymodule"
                   !! The Python script to update the lateral viscous accelerations.
+    python_bridge_lib !< default = "forpy". The library used for language bridging
 
   type(diag_ctrl), pointer :: diag => NULL() !< structure to regulate diagnostics
 
@@ -1681,7 +1686,8 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     if (CS%id_diffv_visc_rem > 0) call post_product_v(CS%id_diffv_visc_rem, diffv, ADp%visc_rem_v, G, nz, CS%diag)
   endif
   
-  if (CS%use_hor_visc_python) call CNN_inference(u, v, h, diffu, diffv, G, GV, CS%python, CS%CNN) !Cheng
+  if (CS%use_hor_visc_python) call CNN_inference(u, v, h, diffu, diffv, G, GV, CS%python, CS%smartsim_python, &
+                                                 CS%CNN, CS%python_bridge_lib) !Cheng
 
 end subroutine horizontal_viscosity
 
@@ -2390,9 +2396,23 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
   "The name of the Python script for updating the lateral viscous acceleration.", &
   default="pymodule")
   CS%python_file = trim(CS%python_file)
-  if (CS%use_hor_visc_python) call forpy_run_python_init &
-                              (CS%python,trim(CS%python_dir),trim(CS%python_file))!Cheng
-  if (CS%use_hor_visc_python) call CNN_init(Time, G, GV, US, param_file, diag, CS%CNN) !Cheng
+  call get_param(param_file, mdl, "PYTHON_BRIDGE_LIB", CS%python_bridge_lib, &
+      "Determine which library is used for language bridge :\n" // &
+      "  'forpy': Forpy library\n"// &
+      "  'smartsim': smartsim library", default='forpy')
+  CS%python_bridge_lib = trim(CS%python_bridge_lib)
+  
+  if (CS%use_hor_visc_python) then !Cheng
+    select case (lowercase(CS%python_bridge_lib))
+    case("forpy")
+      call forpy_run_python_init(CS%python,trim(CS%python_dir),trim(CS%python_file))
+    case("smartsim")
+      call smartsim_run_python_init(CS%smartsim_python,trim(CS%python_dir),trim(CS%python_file))
+    case default
+      call MOM_error(FATAL, "Invalid library selected for language bridging")
+    end select
+    call CNN_init(Time, G, GV, US, param_file, diag, CS%CNN)
+  endif
   
 
   ! Register fields for output from this module.
@@ -2686,7 +2706,16 @@ subroutine hor_visc_end(CS)
     DEALLOC_(CS%n1n1_m_n2n2_h)
     DEALLOC_(CS%n1n1_m_n2n2_q)
   endif
-  if (CS%use_hor_visc_python) call forpy_run_python_finalize(CS%python)!Cheng
+  if (CS%use_hor_visc_python) then
+    select case (lowercase(CS%python_bridge_lib))
+    case("forpy")
+      call forpy_run_python_finalize(CS%python)!Cheng
+    case("smartsim")
+      call smartsim_run_python_finalize(CS%smartsim_python)
+    case default
+      call MOM_error(FATAL, "Invalid library selected for language bridging")
+    end select
+  endif
 end subroutine hor_visc_end
 !> \namespace mom_hor_visc
 !!
