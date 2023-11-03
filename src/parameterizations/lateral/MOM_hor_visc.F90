@@ -190,6 +190,7 @@ type, public :: hor_visc_CS ; private
   type(CNN_CS)           :: CNN    !< Control structure for CNN !Cheng
   logical :: use_hor_visc_python   !< If true, use a python script to update 
                                    !! the lateral viscous accelerations.
+  logical :: python_data_collection !< If true, Collecting the ML input data to the root PE.
   character(len=200) :: &
     python_dir, & !< default = ".". The directory in which Python scripts are found.
     python_file,& !< default = "pymodule"
@@ -1687,7 +1688,7 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
   endif
   
   if (CS%use_hor_visc_python) call CNN_inference(u, v, h, diffu, diffv, G, GV, CS%python, CS%smartsim_python, &
-                                                 CS%CNN, CS%python_bridge_lib) !Cheng
+                                                 CS%CNN, CS%python_bridge_lib, CS%python_data_collection) !Cheng
 
 end subroutine horizontal_viscosity
 
@@ -2401,11 +2402,17 @@ subroutine hor_visc_init(Time, G, GV, US, param_file, diag, CS, ADp)
       "  'forpy': Forpy library\n"// &
       "  'smartsim': smartsim library", default='forpy')
   CS%python_bridge_lib = trim(CS%python_bridge_lib)
+  call get_param(param_file, mdl, "PYTHON_DATA_COLLECTION", CS%python_data_collection, & !Cheng
+  "Collecting the ML input data to the root PE.", default=.false.)
   
   if (CS%use_hor_visc_python) then !Cheng
     select case (lowercase(CS%python_bridge_lib))
     case("forpy")
-      call forpy_run_python_init(CS%python,trim(CS%python_dir),trim(CS%python_file))
+      if (CS%python_data_collection) then
+        if (is_root_pe()) call forpy_run_python_init(CS%python,trim(CS%python_dir),trim(CS%python_file))
+      else
+        call forpy_run_python_init(CS%python,trim(CS%python_dir),trim(CS%python_file))
+      endif
     case("smartsim")
       call smartsim_run_python_init(CS%smartsim_python,trim(CS%python_dir),trim(CS%python_file))
     case default
@@ -2709,7 +2716,11 @@ subroutine hor_visc_end(CS)
   if (CS%use_hor_visc_python) then
     select case (lowercase(CS%python_bridge_lib))
     case("forpy")
-      call forpy_run_python_finalize(CS%python)!Cheng
+      if (CS%python_data_collection) then
+        if (is_root_pe()) call forpy_run_python_finalize(CS%python)
+      else
+        call forpy_run_python_finalize(CS%python)!Cheng
+      endif
     case("smartsim")
       call smartsim_run_python_finalize(CS%smartsim_python)
     case default
