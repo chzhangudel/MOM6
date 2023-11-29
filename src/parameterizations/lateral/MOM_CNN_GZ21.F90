@@ -15,6 +15,8 @@ use MOM_string_functions,      only : lowercase
 use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOCK_ROUTINE
 use Forpy_interface,           only : forpy_run_python, python_interface
 use SmartSim_interface,        only : smartsim_run_python, smartsim_python_interface
+use MOM_debugging,             only : hchksum_pair, uvchksum
+use MOM_coms_infra,            only : sync_PEs
 
 
 implicit none; private
@@ -256,6 +258,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
   call create_group_pass(pass_CNN,Sxstd,G%Domain)
   call create_group_pass(pass_CNN,Systd,G%Domain)
   call do_group_pass(pass_CNN,G%Domain)
+  ! call hchksum_pair('SxSyMEAN_[SxSyMEAN]', Sxmean,Symean,G%HI)
+  ! call hchksum_pair('SxSySTD_[SxSySTD]', Sxstd,Systd,G%HI)
+  ! call hchksum_pair('SxSy_[SxSy]', Sx,Sy,G%HI)
   call cpu_clock_end(CNN%id_cnn_post2)
  
   call cpu_clock_begin(CNN%id_cnn_post3)
@@ -278,6 +283,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
       diffv(i,J,k) = diffv(i,J,k) + fy(i,J,k) ! Update diffv with Sy
     enddo ; enddo
   enddo
+  ! call uvchksum('fxfy_[fxfy]', fx,fy,G%HI)
   call cpu_clock_end(CNN%id_cnn_post3)
 
   call cpu_clock_begin(CNN%id_cnn_post4)
@@ -289,7 +295,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
   if (CNN%id_Systd>0)   call post_data(CNN%id_Systd, Systd, CNN%diag)
   if (CNN%id_KE_CNN>0) call compute_energy_source(u, v, h, fx, fy, G, GV, CNN)
   call cpu_clock_end(CNN%id_cnn_post4)
-
+  call sync_PEs()
   call cpu_clock_end(CNN%id_cnn_post)
 
 end subroutine CNN_inference
