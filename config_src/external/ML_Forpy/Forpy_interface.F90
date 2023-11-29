@@ -1,6 +1,7 @@
 module Forpy_interface
 
 use MOM_error_handler,         only : MOM_error, WARNING
+use MOM_grid,                  only : ocean_grid_type
 
 implicit none; private
 
@@ -24,18 +25,15 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> !> Send variables to a python script and output the results
-subroutine forpy_run_python(in1, in2, out1, out2, CS, TopLayer)
+subroutine forpy_run_python(in1, out1, CS, TopLayer, G)
     type(python_interface),        intent(in)  :: CS     !< Python interface object
+    type(ocean_grid_type),         intent(in)    :: G     !< The ocean's grid structure.
   ! Local Variables
     logical, intent(in) :: TopLayer             !< If true, only top layer is used.
-    real, dimension(:,:,:), &
-                                    intent(in) :: in1     ! First input variable.
-    real, dimension(:,:,:), &
-                                    intent(in) :: in2     ! second input variable.
-    real, dimension(:,:,:), &
-                                    intent(inout) :: out1      ! First output variable.
-    real, dimension(:,:,:), &
-                                    intent(inout) :: out2      ! second output variable.
+    real, dimension(:,:,:,:), &
+                                    intent(in) :: in1     ! input variables.
+    real, dimension(:,:,:,:), &
+                                    intent(inout) :: out1      ! output variables.
 
 end subroutine forpy_run_python 
 
