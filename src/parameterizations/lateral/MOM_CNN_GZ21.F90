@@ -1,5 +1,6 @@
 module MOM_CNN_GZ21
 
+use MOM_database_comms,        only : dbcomms_CS_type, dbclient_type
 use MOM_grid,                  only : ocean_grid_type
 use MOM_verticalGrid,          only : verticalGrid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
@@ -52,6 +53,7 @@ public :: CNN_init,CNN_inference
 !> Control structure for CNN
 type, public :: CNN_CS ; private
   type(MOM_domain_type), pointer :: CNN_Domain => NULL()  !< Domain for inputs/outputs for CNN
+  type(dbclient_type),   pointer :: client => NULL() !< The database communication client
   integer :: isdw !< The lower i-memory limit for the wide halo arrays.
   integer :: iedw !< The upper i-memory limit for the wide halo arrays.
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
@@ -80,13 +82,14 @@ end type CNN_CS
 contains
 
 !> Prepare CNN input variables with wide halos
-subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
+subroutine CNN_init(Time,G,GV,US,param_file,diag, dbcomms_CS, CS)
   type(time_type),               intent(in)    :: Time       !< The current model time.
   type(ocean_grid_type),         intent(in)    :: G     !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),         intent(in)    :: US         !< A dimensional unit scaling type
   type(param_file_type),         intent(in)    :: param_file !< Parameter file parser structure.
   type(diag_ctrl), target,       intent(inout) :: diag  !< Diagnostics structure.
+  type(dbcomms_CS_type), target, intent(in   ) :: dbcomms_CS !< Control structure for database communications
   type(CNN_CS),                  intent(inout) :: CS    !< Control structure for CNN
   ! Local Variables
   integer :: wd_halos(2) ! Varies with CNN
@@ -94,6 +97,7 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
 
   ! Register fields for output from this module.
   CS%diag => diag
+  CS%client=> dbcomms_CS%client
 
   CS%id_CNNu = register_diag_field('ocean_model', 'CNNu', diag%axesCuL, Time, &
       'Zonal Acceleration from CNN model', 'm s-2', conversion=US%L_T2_to_m_s2)
