@@ -2,6 +2,7 @@ module MOM_CNN_GZ21
 
 use MOM_grid,                  only : ocean_grid_type
 use MOM_verticalGrid,          only : verticalGrid_type
+use MOM_lateral_mixing_coeffs, only : VarMix_CS
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_vector,pass_var,BGRID_NE
 use MOM_domains,               only : create_group_pass,do_group_pass,group_pass_type
@@ -138,9 +139,10 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python_bridge_lib)
+subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN, python_bridge_lib)
   type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
+  type(VarMix_CS),               intent(in)  :: VarMix !< Variable mixing control struct
   type(python_interface),        intent(in)  :: FP_CS  !< Forpy Python interface object
   type(smartsim_python_interface),intent(in)  :: SS_CS  !< SmartSim Python interface object
   type(CNN_CS),                  intent(in)  :: CNN    !< Control structure for CNN
@@ -158,10 +160,12 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
                                  intent(inout) :: diffv  !< Meridional acceleration due to convergence
                                                          !! of along-coordinate stress tensor [L T-2 ~> m s-2].
   ! Local Variables
-  real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
-                                    :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
-                                    :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
+  ! real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
+  !                                   :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
+  ! real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
+  !                                   :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
+  real, allocatable :: WH_u(:,:,:)     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
+  real, allocatable :: WH_v(:,:,:)     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sx,  &     ! CNN output Sx
                                                Sy,  &     ! CNN output Sy
                                                Sxmean,  & ! CNN output Sxmean
@@ -174,8 +178,11 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
   ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fymean     ! CNN output Symean at cell faces
   ! real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)):: fxstd     ! CNN output Sxstd at cell faces
   ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fystd     ! CNN output Systd at cell faces
-  real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
-  real, dimension(6,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
+  ! real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
+  ! real, dimension(6,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
+  real, allocatable :: WH_uv(:,:,:,:)! CNN output
+  real, allocatable :: Sxy(:,:,:,:)! CNN output
+  real :: vs(SZI_(G),SZJ_(G),SZK_(GV)) ! vertical structure of the acceleration
   type(group_pass_type) :: pass_CNN
 
   integer :: i, j, k
@@ -188,8 +195,23 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
   if (CNN%CNN_BT) then
     nztemp = 1
+    allocate(WH_u(SZIW_(CNN),SZJW_(CNN),1))
+    allocate(WH_v(SZIW_(CNN),SZJW_(CNN),1))
+    allocate(WH_uv(2,SZIW_(CNN),SZJW_(CNN),1))
+    allocate(Sxy(6,SZI_(G),SZJ_(G),1))
+    vs = 0.0
+    vs = VarMix%ebt_struct
+    ! vs = 1.0
+    ! if (G%mask2dT(1,1)>0) then
+    !   write(*,*) "layer 10", vs(1,1,2)
+    !   write(*,*) "layer 10_2", VarMix%ebt_struct(1,1,2)
+    ! endif
   else
     nztemp = nz
+    allocate(WH_u(SZIW_(CNN),SZJW_(CNN),SZK_(GV)))
+    allocate(WH_v(SZIW_(CNN),SZJW_(CNN),SZK_(GV)))
+    allocate(WH_uv(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)))
+    allocate(Sxy(6,SZI_(G),SZJ_(G),SZK_(GV)))
   endif
 
   WH_u = 0.0; WH_v = 0.0;
@@ -231,16 +253,31 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, FP_CS, SS_CS, CNN, python
   call cpu_clock_begin(CNN%id_cnn_post)
   call cpu_clock_begin(CNN%id_cnn_post1)
   Sx=0.0; Sy=0.0; Sxmean=0.0; Symean=0.0; Sxstd=0.0; Systd=0.0;
-  do k=1,nztemp
+  do k=1,nz
     do j=js,je ; do i=is,ie 
-      Sx(i,j,k) = Sxy(1,i,j,k)
-      Sy(i,j,k) = Sxy(2,i,j,k)
-      Sxmean(i,j,k) = Sxy(3,i,j,k)
-      Symean(i,j,k) = Sxy(4,i,j,k)
-      Sxstd(i,j,k) = Sxy(5,i,j,k)
-      Systd(i,j,k) = Sxy(6,i,j,k)
+      if (CNN%CNN_BT) then
+        Sx(i,j,k) = Sxy(1,i,j,1)*vs(i,j,k)
+        Sy(i,j,k) = Sxy(2,i,j,1)*vs(i,j,k)
+        Sxmean(i,j,k) = Sxy(3,i,j,1)*vs(i,j,k)
+        Symean(i,j,k) = Sxy(4,i,j,1)*vs(i,j,k)
+        Sxstd(i,j,k) = Sxy(5,i,j,1)*vs(i,j,k)
+        Systd(i,j,k) = Sxy(6,i,j,1)*vs(i,j,k)
+      else
+        Sx(i,j,k) = Sxy(1,i,j,k)
+        Sy(i,j,k) = Sxy(2,i,j,k)
+        Sxmean(i,j,k) = Sxy(3,i,j,k)
+        Symean(i,j,k) = Sxy(4,i,j,k)
+        Sxstd(i,j,k) = Sxy(5,i,j,k)
+        Systd(i,j,k) = Sxy(6,i,j,k)
+      endif
     enddo ; enddo 
   enddo
+
+  deallocate(WH_u)
+  deallocate(WH_v)
+  deallocate(WH_uv)
+  deallocate(Sxy)
+
   call cpu_clock_end(CNN%id_cnn_post1)
 
   ! Update the halos of Sx Sy
