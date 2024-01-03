@@ -104,6 +104,8 @@ type, public :: VarMix_CS
   real, allocatable :: slope_x(:,:,:)     !< Zonal isopycnal slope [nondim]
   real, allocatable :: slope_y(:,:,:)     !< Meridional isopycnal slope [nondim]
   real, allocatable :: ebt_struct(:,:,:)  !< Vertical structure function to scale diffusivities with [nondim]
+  real, allocatable :: sqg_struct(:,:,:)  !< Vertical structure function of SQG mode with [nondim]
+  real :: sqg_expo     !< SQG exponent [nondim] Default 0.0
 
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: &
     Laplac3_const_u       !< Laplacian metric-dependent constants [L3 ~> m3]
@@ -150,6 +152,7 @@ type, public :: VarMix_CS
   integer :: id_N2_u=-1, id_N2_v=-1, id_S2_u=-1, id_S2_v=-1
   integer :: id_dzu=-1, id_dzv=-1, id_dzSxN=-1, id_dzSyN=-1
   integer :: id_Rd_dx=-1, id_KH_u_QG = -1, id_KH_v_QG = -1
+  integer :: id_sqg_struct=-1
   type(diag_ctrl), pointer :: diag !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
   !>@}
@@ -160,7 +163,7 @@ type, public :: VarMix_CS
 end type VarMix_CS
 
 public VarMix_init, VarMix_end, calc_slope_functions, calc_resoln_function
-public calc_QG_Leith_viscosity, calc_depth_function
+public calc_QG_Leith_viscosity, calc_depth_function, calc_sqg_struct
 
 contains
 
@@ -216,6 +219,7 @@ subroutine calc_resoln_function(h, tv, G, GV, US, CS)
   real :: cg1_v  ! The gravity wave speed interpolated to v points [L T-1 ~> m s-1] or [m s-1].
   real :: dx_term ! A term in the denominator [L2 T-2 ~> m2 s-2] or [m2 s-2]
   integer :: power_2
+  real :: dt !< Time increment [T ~> s]
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: i, j
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -246,6 +250,11 @@ subroutine calc_resoln_function(h, tv, G, GV, US, CS)
 
     call create_group_pass(CS%pass_cg1, CS%cg1, G%Domain)
     call do_group_pass(CS%pass_cg1, G%Domain)
+  endif
+
+  if (CS%sqg_expo>0.0) then
+    call calc_sqg_struct(h, tv, G, GV, US, CS, dt)
+    call pass_var(CS%sqg_struct, G%Domain)
   endif
 
   ! Calculate and store the ratio between deformation radius and grid-spacing
@@ -444,6 +453,66 @@ subroutine calc_resoln_function(h, tv, G, GV, US, CS)
   endif
 
 end subroutine calc_resoln_function
+
+!> Calculates and stores functions of SQG mode
+subroutine calc_sqg_struct(h, tv, G, GV, US, CS, dt)
+  type(ocean_grid_type),                     intent(inout) :: G  !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV !< Vertical grid structure
+  type(unit_scale_type),                     intent(in)    :: US !< A dimensional unit scaling type
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h  !< Layer thickness [H ~> m or kg m-2]
+  type(thermo_var_ptrs),                    intent(in)     :: tv !<Thermodynamic variables
+  real,                                      intent(in)    :: dt !< Time increment [T ~> s]
+  type(VarMix_CS),                           intent(inout) :: CS !< Variable mixing control struct
+!  type(ocean_OBC_type),                      pointer       :: OBC !< Open
+!  boundaries control structure.
+
+  ! Local variables
+  real, dimension(SZI_(G), SZJ_(G),SZK_(GV)+1) :: &
+    e             ! The interface heights relative to mean sea level [Z ~> m].
+  real, dimension(SZIB_(G), SZJ_(G),SZK_(GV)+1) :: N2_u ! Square of Brunt-Vaisala freq at u-points [L2 Z-2 T-2 ~> s-2]
+  real, dimension(SZI_(G), SZJB_(G),SZK_(GV)+1) :: N2_v ! Square of Brunt-Vaisala freq at v-points [L2 Z-2 T-2 ~> s-2]
+  real, dimension(SZIB_(G), SZJ_(G),SZK_(GV)+1) :: dzu ! Z-thickness at u-points [Z ~> m]
+  real, dimension(SZI_(G), SZJB_(G),SZK_(GV)+1) :: dzv ! Z-thickness at v-points [Z ~> m]
+  real, dimension(SZIB_(G), SZJ_(G),SZK_(GV)+1) :: dzSxN ! |Sx| N times dz at u-points [Z T-1 ~> m s-1]
+  real, dimension(SZI_(G), SZJB_(G),SZK_(GV)+1) :: dzSyN ! |Sy| N times dz at v-points [Z T-1 ~> m s-1]
+  real :: f  ! Absolute value of the Coriolis parameter [T-1 ~> s-1]
+  real :: N2  ! Positive buoyancy frequency square or zero [L2 Z-2 T-2 ~> s-2]
+  real :: dzc  ! Spacing between two adjacent layers [m]
+  real, dimension(SZK_(GV)) :: zs  ! Stretched vertical coordinate [m]
+  real :: Le  ! Eddy length scale [m]
+  integer :: i, j, k, is, ie, js, je, nz
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  if (.not. CS%initialized) call MOM_error(FATAL, "MOM_lateral_mixing_coeffs.F90, calc_slope_functions: "//&
+         "Module must be initialized before it is used.")
+
+  call find_eta(h, tv, G, GV, US, e, halo_size=2)
+  call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
+                                  CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v,dzu=dzu, dzv=dzv, &
+                                  dzSxN=dzSxN, dzSyN=dzSyN, halo=1)
+
+  do j=js,je ; do i=is,ie
+    CS%sqg_struct(i,j,1) = 1.0
+  enddo ; enddo
+  zs(1) = 0.0
+  do j=js,je ; do i=is,ie
+    Le = sqrt(G%areaT(i,j))
+    f = max(0.25*abs(G%CoriolisBu(I,J) + G%CoriolisBu(I-1,J-1) + G%CoriolisBu(I-1,J) + G%CoriolisBu(I,J-1)), 1.0e-8)
+    do k=2,nz
+      N2 = max(0.25*(N2_u(I-1,j,k) + N2_u(I,j,k) + N2_v(i,J-1,k) + N2_v(i,J,k)),0.0)
+      dzc = 0.25*(dzu(I-1,j,k) + dzu(I,j,k) + dzv(i,J-1,k) + dzv(i,J,k))
+      zs(k) = zs(k-1) - N2**0.5/f*dzc
+      CS%sqg_struct(i,j,k) = exp(CS%sqg_expo*zs(k)/Le)
+    enddo
+  enddo ; enddo
+
+  if (query_averaging_enabled(CS%diag)) then
+    if (CS%id_sqg_struct > 0) call post_data(CS%id_sqg_struct, CS%sqg_struct, CS%diag)
+  endif
+
+end subroutine calc_sqg_struct
+
 
 !> Calculates and stores functions of isopycnal slopes, e.g. Sx, Sy, S*N, mostly used in the Visbeck et al.
 !! style scaling of diffusivity
@@ -1241,6 +1310,9 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "If true, uses the equivalent barotropic wave speed instead "//&
                  "of first baroclinic wave for calculating the resolution fn.",&
                  default=.false.)
+  call get_param(param_file, mdl, "SQG_EXPO", CS%sqg_expo, &
+                 "Nondimensional exponent coeffecient of the SQG mode "// &
+                 "that is used for vertical struture.", units="nondim", default=0.0)
   call get_param(param_file, mdl, "KHTH_USE_EBT_STRUCT", CS%khth_use_ebt_struct, &
                  "If true, uses the equivalent barotropic structure "//&
                  "as the vertical structure of thickness diffusivity.",&
@@ -1288,6 +1360,10 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "artifacts from altering the equivalent barotropic mode structure.",&
                  units="m", default=2000., scale=US%m_to_Z)
     allocate(CS%ebt_struct(isd:ied,jsd:jed,GV%ke), source=0.0)
+  endif
+
+  if (CS%sqg_expo>0.0) then
+    allocate(CS%sqg_struct(isd:ied,jsd:jed,GV%ke), source=0.0)
   endif
 
   if (CS%use_stored_slopes) then
@@ -1369,6 +1445,11 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
     CS%id_L2v = register_diag_field('ocean_model', 'L2v', diag%axesCv1, Time, &
        'Length scale squared for mixing coefficient, at v-points', &
        'm2', conversion=US%L_to_m**2)
+  endif
+
+  if (CS%sqg_expo>0.0) then
+    CS%id_sqg_struct = register_diag_field('ocean_model', 'sqg_struct', diag%axesTl, Time, &
+            'Vertical structure of SQG mode', 'm', conversion=US%L_to_m)
   endif
 
   if (CS%calculate_Eady_growth_rate .and. CS%use_stored_slopes) then
@@ -1631,6 +1712,9 @@ subroutine VarMix_end(CS)
 
   if (CS%Resoln_use_ebt .or. CS%khth_use_ebt_struct) &
     deallocate(CS%ebt_struct)
+
+  if (CS%sqg_expo>0.0) &
+    deallocate(CS%sqg_struct)
 
   if (CS%use_stored_slopes) then
     deallocate(CS%slope_x)

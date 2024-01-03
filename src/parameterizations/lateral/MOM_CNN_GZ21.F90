@@ -59,7 +59,7 @@ type, public :: CNN_CS ; private
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
 
-  logical :: CNN_BT    !< If true, momentum forcing from CNN is barotropic.
+  character(len=200) :: CNN_VS  !< default = "none". Vertical profile of momentum forcing from CNN
 
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -114,9 +114,13 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
       'Meridional Acceleration from CNN model standard deviation part', &
       'm s-2', conversion=US%L_T2_to_m_s2)
       
-  call get_param(param_file, mdl, "CNN_BT", CS%CNN_BT, &
-      "If true, momentum forcing from CNN is barotropic, otherwise baroclinic (default).", &
-      default=.false.)
+  call get_param(param_file, mdl, "CNN_VS", CS%CNN_VS, &
+      "Vertical profile of momentum forcing from CNN :\n" // &
+      "  'none': infer CNN at each layer\n"// &
+      "  'barotropic': uniform in vertical\n"// &
+      "  'ebt': vertical structure function of EBT mode"// &
+      "  'sqg': vertical structure function of SQG mode", default='none')
+      CS%CNN_VS = trim(CS%CNN_VS)
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=10)
@@ -193,19 +197,25 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  if (CNN%CNN_BT) then
+  if (CNN%CNN_VS /= 'none') then
     nztemp = 1
     allocate(WH_u(SZIW_(CNN),SZJW_(CNN),1))
     allocate(WH_v(SZIW_(CNN),SZJW_(CNN),1))
     allocate(WH_uv(2,SZIW_(CNN),SZJW_(CNN),1))
     allocate(Sxy(6,SZI_(G),SZJ_(G),1))
     vs = 0.0
-    vs = VarMix%ebt_struct
+    select case (lowercase(CNN%CNN_VS))
+    case("barotropic")
+      vs = 1.0
+    case("ebt")
+      vs = VarMix%ebt_struct
+    case("sqg")
+      vs = VarMix%sqg_struct
+    end select
     ! vs = 1.0
-    ! if (G%mask2dT(1,1)>0) then
-    !   write(*,*) "layer 10", vs(1,1,2)
-    !   write(*,*) "layer 10_2", VarMix%ebt_struct(1,1,2)
-    ! endif
+    if (G%mask2dT(1,1)>0) then
+      write(*,*) "layer 10", vs(1,1,2)
+    endif
   else
     nztemp = nz
     allocate(WH_u(SZIW_(CNN),SZJW_(CNN),SZK_(GV)))
@@ -243,9 +253,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   call cpu_clock_begin(CNN%id_cnn_inference)
   select case (lowercase(python_bridge_lib))
   case("forpy")
-    call forpy_run_python(WH_uv, Sxy, FP_CS, CNN%CNN_BT, G)
+    call forpy_run_python(WH_uv, Sxy, FP_CS, G)
   case("smartsim")
-    call smartsim_run_python(WH_uv, Sxy, SS_CS, CNN%CNN_BT, CNN%CNN_halo_size)
+    call smartsim_run_python(WH_uv, Sxy, SS_CS, CNN%CNN_halo_size)
   end select
   call cpu_clock_end(CNN%id_cnn_inference)
 
@@ -255,7 +265,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   Sx=0.0; Sy=0.0; Sxmean=0.0; Symean=0.0; Sxstd=0.0; Systd=0.0;
   do k=1,nz
     do j=js,je ; do i=is,ie 
-      if (CNN%CNN_BT) then
+      if (CNN%CNN_VS /= 'none') then
         Sx(i,j,k) = Sxy(1,i,j,1)*vs(i,j,k)
         Sy(i,j,k) = Sxy(2,i,j,1)*vs(i,j,k)
         Sxmean(i,j,k) = Sxy(3,i,j,1)*vs(i,j,k)
@@ -304,7 +314,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   fx = 0.0; fy = 0.0; 
   do k=1,nz
     do j=js,je ; do I=is-1,ie
-      if (CNN%CNN_BT) then
+      if (CNN%CNN_VS /= 'none') then
         fx(I,j,k) = 0.5*(Sx(i,j,1) + Sx(i+1,j,1))
       else
         fx(I,j,k) = 0.5*(Sx(i,j,k) + Sx(i+1,j,k))
@@ -312,7 +322,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
       diffu(I,j,k) = diffu(I,j,k) + fx(I,j,k) ! Update diffu with Sx
     enddo ; enddo
     do J=js-1,je ; do i=is,ie
-      if (CNN%CNN_BT) then
+      if (CNN%CNN_VS /= 'none') then
         fy(i,J,k) = 0.5*(Sy(i,j,1) + Sy(i,j+1,1))
       else
         fy(i,J,k) = 0.5*(Sy(i,j,k) + Sy(i,j+1,k))
