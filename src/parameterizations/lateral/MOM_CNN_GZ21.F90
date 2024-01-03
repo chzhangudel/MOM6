@@ -213,9 +213,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
       vs = VarMix%sqg_struct
     end select
     ! vs = 1.0
-    if (G%mask2dT(1,1)>0) then
-      write(*,*) "layer 10", vs(1,1,2)
-    endif
+    ! if (G%mask2dT(1,1)>0) then
+    !   write(*,*) "layer 10", vs(1,1,2)
+    ! endif
   else
     nztemp = nz
     allocate(WH_u(SZIW_(CNN),SZJW_(CNN),SZK_(GV)))
