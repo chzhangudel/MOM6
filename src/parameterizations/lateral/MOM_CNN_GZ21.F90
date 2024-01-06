@@ -17,7 +17,10 @@ use MOM_cpu_clock,             only : cpu_clock_id, cpu_clock_begin, cpu_clock_e
 use Forpy_interface,           only : forpy_run_python, python_interface
 use SmartSim_interface,        only : smartsim_run_python, smartsim_python_interface
 use MOM_debugging,             only : hchksum_pair, uvchksum
-use MOM_coms_infra,            only : sync_PEs
+use MOM_error_handler,         only : MOM_error, FATAL, WARNING, is_root_pe
+use MOM_coms,                  only : PE_here,num_PEs,root_PE, sync_PEs
+use MOM_coms,                  only : set_PElist, set_rootPE, Get_PElist,broadcast
+use mpp_mod,                   only : mpp_gather, mpp_scatter
 
 
 implicit none; private
@@ -59,7 +62,7 @@ type, public :: CNN_CS ; private
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
 
-  character(len=200) :: CNN_VS  !< default = "none". Vertical profile of momentum forcing from CNN
+  character(len=200) :: CNN_VS  !< default = "none". Vertical profile of CNN momentum forcing 
 
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -143,7 +146,7 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN, python_bridge_lib)
+subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN, python_bridge_lib,python_data_collect)
   type(ocean_grid_type),         intent(in)  :: G      !< The ocean's grid structure.
   type(verticalGrid_type),       intent(in)  :: GV     !< The ocean's vertical grid structure.
   type(VarMix_CS),               intent(in)  :: VarMix !< Variable mixing control struct
@@ -151,6 +154,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   type(smartsim_python_interface),intent(in)  :: SS_CS  !< SmartSim Python interface object
   type(CNN_CS),                  intent(in)  :: CNN    !< Control structure for CNN
   character(len=*),              intent(in)  :: python_bridge_lib !< The library used for language bridging
+  logical,                       intent(in)  :: python_data_collect !< If true, Collecting Python data to the root PE
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
                                  intent(in)  :: u      !< The zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
@@ -168,6 +172,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   !                                   :: WH_u     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
   ! real, dimension(SZIW_(CNN),SZJW_(CNN),SZK_(GV)) &
   !                                   :: WH_v     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
+  real, dimension(SZIW_(CNN),SZJW_(CNN)) :: WH_m  ! Landmask with a wide halo.
   real, allocatable :: WH_u(:,:,:)     ! The zonal velocity with a wide halo [L T-1 ~> m s-1].
   real, allocatable :: WH_v(:,:,:)     ! The meridional velocity with a wide halo [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: Sx,  &     ! CNN output Sx
@@ -184,12 +189,22 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   ! real, dimension(SZI_(G),SZJB_(G),SZK_(GV)):: fystd     ! CNN output Systd at cell faces
   ! real, dimension(2,SZIW_(CNN),SZJW_(CNN),SZK_(GV)) :: WH_uv     ! CNN input
   ! real, dimension(6,SZI_(G),SZJ_(G),SZK_(GV)) :: Sxy! CNN output
-  real, allocatable :: WH_uv(:,:,:,:)! CNN output
+  real, allocatable :: WH_uv(:,:,:,:)! CNN input
   real, allocatable :: Sxy(:,:,:,:)! CNN output
   real :: vs(SZI_(G),SZJ_(G),SZK_(GV)) ! vertical structure of the acceleration
-  type(group_pass_type) :: pass_CNN
+  type(group_pass_type) :: pass_CNN, pass_uvm
 
-  integer :: i, j, k
+  real, allocatable, dimension(:,:,:)   :: g3d_u ! temp variable for u to gather velocity field
+  real, allocatable, dimension(:,:,:)   :: g3d_v ! temp variable for v to gather velocity field
+  real, allocatable, dimension(:,:)     :: g3d_m ! temp variable for m to gather landmask
+  real, allocatable, dimension(:,:,:,:) :: WH_uv_glob   ! CNN input in global index
+  real, allocatable, dimension(:,:)     :: WH_m_glob    ! Landmask in global index
+  real, allocatable, dimension(:,:,:,:) :: Sxy_glob     ! CNN output in global index
+  integer, allocatable, dimension(:)   :: pelist
+  integer :: index_global(4) ! absolute begin and end index in the subdomain
+  integer :: isg, ieg, jsg, jeg
+
+  integer :: i, j, k, l
   integer :: is, ie, js, je, nz, nztemp
   integer :: isdw, iedw, jsdw, jedw
 
@@ -211,6 +226,8 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
       vs = VarMix%ebt_struct
     case("sqg")
       vs = VarMix%sqg_struct
+    case default
+      call MOM_error(FATAL, "Invalid vertical profile of CNN momentum forcing")
     end select
     ! vs = 1.0
     ! if (G%mask2dT(1,1)>0) then
@@ -224,28 +241,151 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
     allocate(Sxy(6,SZI_(G),SZJ_(G),SZK_(GV)))
   endif
 
-  WH_u = 0.0; WH_v = 0.0;
+  WH_u = 0.0; WH_v = 0.0; WH_m = 0.0;
   do k=1,nztemp
     do j=js,je ; do i=is,ie
       WH_u(i,j,k) = 0.5*( u(I-1,j,k) + u(I,j,k) ) ! Copy the computational section from u into cell center
-    enddo ; enddo
-    do j=js,je ; do i=is,ie
       WH_v(i,j,k) = 0.5*( v(i,J-1,k) + v(i,J,k) ) ! Copy the computational section from v into cell center
     enddo ; enddo
   enddo
+  do j=G%jsd,G%jed ; do i=G%isd,G%ied
+    WH_m(i,j) = G%mask2dT(i,j)
+  enddo ; enddo
 
-  ! Update the wide halos of WH_u WH_v
-  call pass_var(WH_u, CNN%CNN_Domain)
-  call pass_var(WH_v, CNN%CNN_Domain)
+  ! do k=1,nztemp
+  !   do j=js,je ; do i=is,ie 
+  !     WH_u(i,j,k) = 0.01*(PE_here())
+  !     WH_v(i,j,k) = 0.01*(15.-PE_here())
+  !   enddo ; enddo 
+  ! enddo
+  ! if (is_root_pe()) then
+  !   open(10,file='WH_u0')
+  !   do j=1,size(WH_u,2) 
+  !     write(10,100) (WH_u(i,j,1),i=1,size(WH_u,1))
+  !   enddo 
+  !   close(10)
+  ! endif
+
+  ! Update the wide halos of WH_u WH_v WH_m
+  call create_group_pass(pass_uvm,WH_u,CNN%CNN_Domain)
+  call create_group_pass(pass_uvm,WH_v,CNN%CNN_Domain)
+  call create_group_pass(pass_uvm,WH_m,CNN%CNN_Domain)
+  call do_group_pass(pass_uvm,CNN%CNN_Domain)
 
   ! Combine arrays for CNN input
-  WH_uv = 0.0
-  do k=1,nztemp
-    do j=jsdw,jedw ; do i=isdw,iedw 
-      WH_uv(1,i,j,k) = WH_u(i,j,k)
-      WH_uv(2,i,j,k) = WH_v(i,j,k)
-    enddo ; enddo 
-  enddo
+  if (python_data_collect) then
+    ! collect data to root PE
+    isg = G%isc+G%idg_offset
+    ieg = G%iec+G%idg_offset
+    jsg = G%jsc+G%jdg_offset
+    jeg = G%jec+G%jdg_offset
+    allocate(pelist(num_PEs()))
+    call Get_PEList(pelist)
+    if (is_root_pe()) then
+      allocate(g3d_u(G%Domain%niglobal, G%Domain%njglobal, nztemp))
+      allocate(g3d_v(G%Domain%niglobal, G%Domain%njglobal, nztemp))
+      allocate(g3d_m(G%Domain%niglobal, G%Domain%njglobal))
+      allocate(WH_uv_glob(size(WH_uv,1),G%Domain%niglobal+2*CNN%CNN_halo_size,G%Domain%njglobal+2*CNN%CNN_halo_size,nztemp))
+      allocate(WH_m_glob(G%Domain%niglobal+2*CNN%CNN_halo_size,G%Domain%njglobal+2*CNN%CNN_halo_size))
+      allocate(Sxy_glob(size(Sxy,1),G%Domain%niglobal, G%Domain%njglobal, nztemp))
+    endif
+    call mpp_gather(isg, ieg, jsg, jeg, nztemp, pelist, &
+                    WH_u(is:ie,js:je,:), g3d_u, is_root_pe())
+    call mpp_gather(isg, ieg, jsg, jeg, nztemp, pelist, &
+                    WH_v(is:ie,js:je,:), g3d_v, is_root_pe())
+    call mpp_gather(isg, ieg, jsg, jeg, pelist, &
+                    WH_m(is:ie,js:je), g3d_m, is_root_pe())
+    call sync_PEs()
+
+    WH_uv_glob = 0.0; WH_m_glob = 0.0
+    do k=1,nztemp
+      do j=1,size(g3d_u,2) ; do i=1,size(g3d_u,1)
+        WH_uv_glob(1,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_u(i,j,k)
+        WH_uv_glob(2,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_v(i,j,k)
+        WH_m_glob(i+CNN%CNN_halo_size,j+CNN%CNN_halo_size) = g3d_m(i,j)
+      enddo ; enddo
+    enddo
+
+    index_global(1) = 1
+    index_global(2) = size(WH_m_glob,1)
+    index_global(3) = 1
+    index_global(4) = size(WH_m_glob,2)
+
+    ! if (is_root_pe()) then
+    !   write(*,*) "PELIST=",pelist
+    !   write(*,*) "size(g3d_u,1)=",size(g3d_u,1),"; size(g3d_u,2)=",size(g3d_u,2),"; size(g3d_u,3)=",size(g3d_u,3)
+    !   write(*,*) "size(WH_uv_glob,2)=",size(WH_uv_glob,2),"; size(WH_uv_glob,3)=",size(WH_uv_glob,3),"; size(WH_uv_glob,4)=",size(WH_uv_glob,4)
+    !   write(*,*) "size(Sxy_glob,1)=",size(Sxy_glob,1), "; size(Sxy_glob,2)=",size(Sxy_glob,2),  &
+    !              "; size(Sxy_glob,3)=",size(Sxy_glob,3),"; size(Sxy_glob,4)=",size(Sxy_glob,4)
+    !   write(*,*) "is=",is,"; isdw=",isdw, "; isg=",isg
+    !   write(*,*) "ie=",ie,"; iedw=",iedw, "; ieg=",ieg
+    !   write(*,*) "index_global=",index_global
+
+    !   open(10,file='g3d_u')
+    !   do j=1,size(g3d_u,2) 
+    !     write(10,100) (g3d_u(i,j,1),i=1,size(g3d_u,1))
+    !   enddo 
+    !   close(10)
+      
+    !   open(10,file='g3d_v')
+    !   do j=1,size(g3d_v,2) 
+    !     write(10,100) (g3d_v(i,j,1),i=1,size(g3d_v,1))
+    !   enddo 
+    !   close(10)
+
+    !   open(10,file='g3d_m')
+    !   do j=1,size(g3d_m,2) 
+    !     write(10,100) (g3d_m(i,j),i=1,size(g3d_m,1))
+    !   enddo 
+    !   close(10)
+
+    !   open(10,file='WH_uv_glob')
+    !   do j=1,size(WH_uv_glob,3) 
+    !     write(10,100) (WH_uv_glob(1,i,j,1),i=1,size(WH_uv_glob,2))
+    !   enddo 
+    !   close(10)
+
+    !   open(10,file='WH_m_glob')
+    !   do j=1,size(WH_m_glob,2) 
+    !     write(10,100) (WH_m_glob(i,j),i=1,size(WH_m_glob,1))
+    !   enddo 
+    !   close(10)
+    ! endif
+
+  else 
+    ! not collect data to root PE
+    WH_uv = 0.0
+    do k=1,nztemp
+      do j=jsdw,jedw ; do i=isdw,iedw 
+        WH_uv(1,i,j,k) = WH_u(i,j,k)
+        WH_uv(2,i,j,k) = WH_v(i,j,k)
+      enddo ; enddo 
+    enddo
+    index_global(1) = G%isc+G%idg_offset
+    index_global(2) = G%iec+G%idg_offset
+    index_global(3) = G%jsc+G%jdg_offset
+    index_global(4) = G%jec+G%jdg_offset
+
+    ! if (is_root_pe()) then
+    !   open(10,file='WH_u')
+    !   do j=1,size(WH_u,2) 
+    !     write(10,100) (WH_u(i,j,1),i=1,size(WH_u,1))
+    !   enddo 
+    !   close(10)
+
+    !   open(10,file='WH_uv')
+    !   do j=1,size(WH_uv,3) 
+    !     write(10,100) (WH_uv(1,i,j,1),i=1,size(WH_uv,2))
+    !   enddo 
+    !   close(10)
+
+    !   open(10,file='WH_m')
+    !   do j=1,size(WH_m,2) 
+    !     write(10,100) (WH_m(i,j),i=1,size(WH_m,1))
+    !   enddo 
+    !   close(10)
+    ! endif
+  endif
 
   ! Run Python script for CNN inference
   Sxy = 0.0
@@ -253,7 +393,24 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   call cpu_clock_begin(CNN%id_cnn_inference)
   select case (lowercase(python_bridge_lib))
   case("forpy")
-    call forpy_run_python(WH_uv, Sxy, FP_CS, G)
+    if (python_data_collect) then
+      if (is_root_pe()) call forpy_run_python(WH_uv_glob, Sxy_glob, WH_m_glob, index_global, FP_CS)
+      call sync_PEs()
+      do l=1,size(Sxy,1)
+        call mpp_scatter(isg, ieg, jsg, jeg, nztemp, pelist, &
+                         Sxy(l,is:ie,js:je,:), Sxy_glob(l,:,:,:), is_root_pe())
+      enddo
+      if (is_root_pe()) then
+        deallocate(g3d_u)
+        deallocate(g3d_v)
+        deallocate(g3d_m)
+        deallocate(WH_uv_glob)
+        deallocate(WH_m_glob)
+        deallocate(Sxy_glob)
+      endif
+    else
+      call forpy_run_python(WH_uv, Sxy, WH_m, index_global, FP_CS)
+    endif
   case("smartsim")
     call smartsim_run_python(WH_uv, Sxy, SS_CS, CNN%CNN_halo_size)
   end select
@@ -283,6 +440,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
     enddo ; enddo 
   enddo
 
+  ! Delocate variables
   deallocate(WH_u)
   deallocate(WH_v)
   deallocate(WH_uv)
@@ -344,6 +502,9 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   call cpu_clock_end(CNN%id_cnn_post4)
   call sync_PEs()
   call cpu_clock_end(CNN%id_cnn_post)
+
+  ! 100 FORMAT(5000es15.4)
+  ! if (is_root_pe()) stop'debugging!'
 
 end subroutine CNN_inference
 
