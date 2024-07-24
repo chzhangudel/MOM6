@@ -3,25 +3,40 @@ module MOM_random
 
 ! This file is part of MOM6. See LICENSE.md for the license.
 
-use MOM_hor_index,       only : hor_index_type
-use MOM_time_manager,    only : time_type, set_date, get_date
+use MOM_hor_index,    only : hor_index_type
+use MOM_time_manager, only : time_type, set_date, get_date
 
-use MersenneTwister_mod, only : randomNumberSequence ! Random number class from FMS
-use MersenneTwister_mod, only : new_RandomNumberSequence ! Constructor/initializer
-use MersenneTwister_mod, only : getRandomReal ! Generates a random number
-use MersenneTwister_mod, only : getRandomPositiveInt ! Generates a random positive integer
+use iso_fortran_env,  only : stdout=>output_unit, stderr=>error_unit
+use iso_fortran_env, only : int32
 
 implicit none ; private
 
 public :: random_0d_constructor
 public :: random_01
+public :: random_01_CB
 public :: random_norm
 public :: random_2d_constructor
 public :: random_2d_01
 public :: random_2d_norm
 public :: random_unit_tests
 
-#include <MOM_memory.h>
+! Private period parameters for the Mersenne Twister
+integer, parameter :: &
+    blockSize = 624,          & !< Size of the state vector
+    M         = 397,          & !< Pivot element in state vector
+    MATRIX_A  = -1727483681,  & !< constant vector a (0x9908b0dfUL)
+    UMASK     = ibset(0, 31),  & !< most significant w-r bits (0x80000000UL)
+    LMASK     = 2147483647      !< least significant r bits (0x7fffffffUL)
+
+! Private tempering parameters for the Mersenne Twister
+integer, parameter :: TMASKB= -1658038656, & !< (0x9d2c5680UL)
+                      TMASKC= -272236544     !< (0xefc60000UL)
+
+!> A private type used by the Mersenne Twistor
+type randomNumberSequence
+  integer                            :: currentElement !< Index into state vector
+  integer, dimension(0:blockSize -1) :: state          !< State vector
+end type randomNumberSequence
 
 !> Container for pseudo-random number generators
 type, public :: PRNG ; private
@@ -44,6 +59,29 @@ real function random_01(CS)
 
 end function random_01
 
+!> Returns a random number between 0 and 1
+!! See https://arxiv.org/abs/2004.06278. Not an exact reproduction of "squares" because Fortran
+!! doesn't have a uint64 type, and not all compilers provide integers with > 64 bits...
+real function random_01_CB(ctr, key)
+  use iso_fortran_env, only : int64
+  integer, intent(in)  :: ctr !< ctr should be incremented each time you call the function
+  integer, intent(in)  :: key !< key is like a seed: use a different key for each random stream
+  integer(kind=int64) :: x, y, z ! Follows "Squares" naming convention
+
+  x = (ctr + 1) * (key + 65536) ! 65536 added because keys below that don't work.
+  y = (ctr + 1) * (key + 65536)
+  z = y + (key + 65536)
+  x = x*x + y
+  x = ior(ishft(x,32),ishft(x,-32))
+  x = x*x + z
+  x = ior(ishft(x,32),ishft(x,-32))
+  x = x*x + y
+  x = ior(ishft(x,32),ishft(x,-32))
+  x = x*x + z
+  random_01_CB = .5*(1. + .5*real(int(ishft(x,-32)))/real(2**30))
+
+end function
+
 !> Returns an approximately normally distributed random number with mean 0 and variance 1
 real function random_norm(CS)
   type(PRNG), intent(inout) :: CS !< Container for pseudo-random number generators
@@ -61,7 +99,7 @@ end function random_norm
 subroutine random_2d_01(CS, HI, rand)
   type(PRNG),           intent(inout) :: CS !< Container for pseudo-random number generators
   type(hor_index_type), intent(in)    :: HI !< Horizontal index structure
-  real, dimension(SZI_(HI),SZJ_(HI)), intent(out) :: rand !< Random numbers between 0 and 1
+  real, dimension(HI%isd:HI%ied,HI%jsd:HI%jed), intent(out) :: rand !< Random numbers between 0 and 1 [nondim]
   ! Local variables
   integer :: i,j
 
@@ -78,7 +116,7 @@ end subroutine random_2d_01
 subroutine random_2d_norm(CS, HI, rand)
   type(PRNG),           intent(inout) :: CS !< Container for pseudo-random number generators
   type(hor_index_type), intent(in)    :: HI !< Horizontal index structure
-  real, dimension(SZI_(HI),SZJ_(HI)), intent(out) :: rand !< Random numbers between 0 and 1
+  real, dimension(HI%isd:HI%ied,HI%jsd:HI%jed), intent(out) :: rand !< Random numbers between 0 and 1 [nondim]
   ! Local variables
   integer :: i,j,n
 
@@ -121,6 +159,7 @@ subroutine random_2d_constructor(CS, HI, Time, seed)
   if (.not. allocated(CS%stream2d)) allocate( CS%stream2d(HI%isd:HI%ied,HI%jsd:HI%jed) )
 
   tseed = seed_from_time(Time)
+
   tseed = ieor(tseed*9007, seed)
   do j = HI%jsd,HI%jed
     do i = HI%isd,HI%ied
@@ -141,8 +180,9 @@ integer function seed_from_time(Time)
   call get_date(Time,yr,mo,dy,hr,mn,sc)
   s1 = sc + 61*(mn + 61*hr) + 379 ! Range 379 .. 89620
   ! Fun fact: 2147483647 is the eighth Mersenne prime.
-  ! This is not the reason for using 2147483647+1 here.
-  s2 = mod(dy + 32*(mo + 13*yr), 2147483648) ! Range 0 .. 2147483647
+  ! This is not the reason for using 2147483647 here. It is the
+  ! largest integer of kind=4.
+  s2 = modulo(dy + 32*(mo + 13*yr), 2147483647_4) ! Range 0 .. 2147483646
   seed_from_time = ieor(s1*4111, s2)
 
 end function seed_from_time
@@ -153,7 +193,7 @@ integer function seed_from_index(HI, i, j)
   integer,              intent(in) :: i !< i-index (of h-cell)
   integer,              intent(in) :: j !< j-index (of h-cell)
   ! Local variables
-  integer :: ig, jg, ni, nj, ij
+  integer :: ig, jg, ni, nj
 
   ni = HI%niglobal
   nj = HI%njglobal
@@ -176,20 +216,116 @@ subroutine random_destruct(CS)
   !deallocate(CS)
 end subroutine random_destruct
 
+!> Return an initialized twister using seed
+!!
+!! Code was based on initialize_scaler() from the FMS implementation of the Mersenne Twistor
+function new_RandomNumberSequence(seed) result(twister)
+  integer, intent(in) :: seed !< Seed to initialize twister
+  type(randomNumberSequence) :: twister !< The Mersenne Twister container
+  ! Local variables
+  integer :: i
+
+  twister%state(0) = iand(seed, -1)
+  do i = 1,  blockSize - 1 ! ubound(twister%state)
+    twister%state(i) = 1812433253 * ieor(twister%state(i-1), &
+                                         ishft(twister%state(i-1), -30)) + i
+    twister%state(i) = iand(twister%state(i), -1) ! for >32 bit machines
+  end do
+  twister%currentElement = blockSize
+end function new_RandomNumberSequence
+
+!> Return a random integer on interval [0,0xffffffff]
+!!
+!! Code was based on getRandomInt() from the FMS implementation of the Mersenne Twistor
+integer function getRandomInt(twister)
+  type(randomNumberSequence), intent(inout) :: twister !< The Mersenne Twister container
+
+  if (twister%currentElement >= blockSize) call nextState(twister)
+  getRandomInt = temper(twister%state(twister%currentElement))
+  twister%currentElement = twister%currentElement + 1
+
+end function getRandomInt
+
+!> Return a random real number on interval [0,1]
+!!
+!! Code was based on getRandomReal() from the FMS implementation of the Mersenne Twistor
+double precision function getRandomReal(twister)
+  type(randomNumberSequence), intent(inout) :: twister
+  ! Local variables
+  integer :: localInt
+
+  localInt = getRandomInt(twister)
+  if (localInt < 0) then
+    getRandomReal = dble(localInt + 2.0d0**32)/(2.0d0**32 - 1.0d0)
+  else
+    getRandomReal = dble(localInt            )/(2.0d0**32 - 1.0d0)
+  end if
+end function getRandomReal
+
+!> Merge bits of u and v
+integer function mixbits(u, v)
+  integer, intent(in) :: u !< An integer
+  integer, intent(in) :: v !< An integer
+
+  mixbits = ior(iand(u, UMASK), iand(v, LMASK))
+end function mixbits
+
+!> Twist bits of u and v
+integer function twist(u, v)
+  integer, intent(in) :: u !< An integer
+  integer, intent(in) :: v !< An integer
+  ! Local variable
+  integer, parameter, dimension(0:1) :: t_matrix = (/ 0, MATRIX_A /)
+
+  twist = ieor(ishft(mixbits(u, v), -1), t_matrix(iand(v, 1)))
+  twist = ieor(ishft(mixbits(u, v), -1), t_matrix(iand(v, 1)))
+end function twist
+
+!> Update internal state of twister to the next state in the sequence
+subroutine nextState(twister)
+  type(randomNumberSequence), intent(inout) :: twister !< Container for the Mersenne Twister
+  ! Local variables
+  integer :: k
+
+  do k = 0, blockSize - M - 1
+    twister%state(k) = ieor(twister%state(k + M), &
+                            twist(twister%state(k), twister%state(k + 1)))
+  end do
+  do k = blockSize - M, blockSize - 2
+    twister%state(k) = ieor(twister%state(k + M - blockSize), &
+                            twist(twister%state(k), twister%state(k + 1)))
+  end do
+  twister%state(blockSize - 1) = ieor(twister%state(M - 1), &
+                                      twist(twister%state(blockSize - 1), twister%state(0)))
+  twister%currentElement = 0
+end subroutine nextState
+
+!> Tempering of bits in y
+elemental integer function temper(y)
+  integer, intent(in) :: y !< An integer
+  ! Local variables
+  integer :: x
+
+  x      = ieor(y, ishft(y, -11))
+  x      = ieor(x, iand(ishft(x,  7), TMASKB))
+  x      = ieor(x, iand(ishft(x, 15), TMASKC))
+  temper = ieor(x, ishft(x, -18))
+end function temper
+
 !> Runs some statistical tests on the PRNG
 logical function random_unit_tests(verbose)
   logical :: verbose !< True if results should be written to stdout
   ! Local variables
   type(PRNG) :: test_rng ! Generator
   type(time_type) :: Time ! Model time
-  real :: r1, r2, r3 ! Some random numbers and re-used work variables
-  real :: mean, var, ar1, std ! Some statistics
+  real :: r1, r2, r3 ! Some random numbers and re-used work variables [nondim]
+  real :: mean, var, ar1, std ! Some statistics [nondim]
   integer :: stdunit ! For messages
   integer, parameter :: n_samples = 800
   integer :: i, j, ni, nj
   ! Fake being on a decomposed domain
   type(hor_index_type), pointer :: HI => null() !< Not the real HI
-  real, dimension(:,:), allocatable :: r2d ! Random numbers
+  real, dimension(:,:), allocatable :: r2d ! Random numbers [nondim]
 
   ! Fake a decomposed domain
   ni = 6
@@ -205,7 +341,7 @@ logical function random_unit_tests(verbose)
   HI%jdg_offset = 0
 
   random_unit_tests = .false.
-  stdunit = 6
+  stdunit = stdout
   write(stdunit,'(1x,a)') '==== MOM_random: random_unit_tests ======================='
 
   if (verbose) write(stdunit,'(1x,"random: ",a)') '-- Time-based seeds ---------------------'
@@ -411,21 +547,23 @@ logical function test_fn(verbose, good, label, rvalue, ivalue)
   logical,          intent(in) :: verbose !< Verbosity
   logical,          intent(in) :: good !< True if pass, false otherwise
   character(len=*), intent(in) :: label !< Label for messages
-  real,             intent(in) :: rvalue !< Result of calculation
+  real,             intent(in) :: rvalue !< Result of calculation [nondim]
   integer,          intent(in) :: ivalue !< Result of calculation
   optional :: rvalue, ivalue
 
   if (present(ivalue)) then
     if (.not. good) then
-      write(0,'(1x,a,i10,1x,a,a)') 'random: result =',ivalue,label,' <------- FAIL!'
+      write(stdout,'(1x,a,i10,1x,a,a)') 'random: result =',ivalue,label,' <------- FAIL!'
+      write(stderr,'(1x,a,i10,1x,a,a)') 'random: result =',ivalue,label,' <------- FAIL!'
     elseif (verbose) then
-      write(6,'(1x,a,i10,1x,a)') 'random: result =',ivalue,label
+      write(stdout,'(1x,a,i10,1x,a)') 'random: result =',ivalue,label
     endif
   else
     if (.not. good) then
-      write(0,'(1x,a,1pe15.8,1x,a,a)') 'random: result =',rvalue,label,' <------- FAIL!'
+      write(stdout,'(1x,a,1pe15.8,1x,a,a)') 'random: result =',rvalue,label,' <------- FAIL!'
+      write(stderr,'(1x,a,1pe15.8,1x,a,a)') 'random: result =',rvalue,label,' <------- FAIL!'
     elseif (verbose) then
-      write(6,'(1x,a,1pe15.8,1x,a)') 'random: result =',rvalue,label
+      write(stdout,'(1x,a,1pe15.8,1x,a)') 'random: result =',rvalue,label
     endif
   endif
   test_fn = .not. good
@@ -436,7 +574,11 @@ end module MOM_random
 
 !> \namespace mom_random
 !!
-!! Provides MOM6 wrappers to the FMS implementation of the Mersenne twister.
+!! Provides MOM6 implementation of the Mersenne Twistor, copied from the FMS implementation
+!! which was originally written by Robert Pincus (Robert.Pincus@colorado.edu).
+!! We once used the FMS implementation directly but since random numers do not need to be
+!! infrastructure specific, and because MOM6 should be infrastructure agnostic, we have copied
+!! the parts of MT that we used here.
 !!
 !! Example usage:
 !! \code
