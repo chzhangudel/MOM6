@@ -292,12 +292,6 @@ type, public :: mech_forcing
                                 !! Horizontal - v points
                                 !! 3rd dimension - wavenumber
 
-  real, pointer, dimension(:) :: &
-       stk_wavenumbers => NULL()
-  real, pointer, dimension(:,:,:) :: &
-       ustkb => NULL(), &
-       vstkb => NULL()
-
   logical :: initialized = .false. !< This indicates whether the appropriate arrays have been initialized.
 end type mech_forcing
 

@@ -1215,11 +1215,6 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, dz, Waves, &
 
   USE_MA = Waves%LA_Misalignment
   if (present(Override_MA)) USE_MA = Override_MA
-  if (present(debug_in)) then
-    debug = debug_in
-  else
-    debug = .false.
-  endif
 
   ! If requesting to use misalignment in the Langmuir number compute the Shear Direction
   if (USE_MA) then
@@ -1287,12 +1282,6 @@ subroutine get_Langmuir_Number( LA, G, GV, US, HBL, ustar, i, j, dz, Waves, &
     ! We shouldn't expect values lower than this, but there is also no good reason to cap it here
     ! other than to prevent large enhancements in unconstrained parts of the curve fit parameterizations.
     LA = max(Waves%La_min, sqrt(US%Z_to_L*ustar / (LA_STK + Waves%La_Stk_backgnd)))
-  endif
-
-  if (debug) then
-     WaveDirection = atan2(LA_STKy, LA_STKx)
-     write(*,*)'In get Langmuir number:',LA,LA_STK,ustar
-     write(*,*)WaveDirection,ShearDirection,cos(wavedirection-sheardirection)
   endif
 
   if (Use_MA) then

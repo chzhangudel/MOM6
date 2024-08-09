@@ -176,7 +176,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   integer :: isd, ied, jsd, jed
   integer, dimension(4) :: fld_sz
   character(len=32) :: assim_method
-  integer :: npes_pm, ens_info(6)
+  integer :: npes_pm, ens_info(7)
   character(len=30) :: coord_mode
   character(len=200) :: inputdir, basin_file
   character(len=80) :: basin_var

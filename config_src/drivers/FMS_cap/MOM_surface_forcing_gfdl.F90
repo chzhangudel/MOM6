@@ -201,8 +201,6 @@ type, public :: ice_ocean_boundary_type
                                                             !! ice-shelves, expressed as a coefficient
                                                             !! for divergence damping, as determined
                                                             !! outside of the ocean model [m3 s-1]
-  real, pointer, dimension(:,:)   :: ustk0           => NULL() !<
-  real, pointer, dimension(:,:)   :: vstk0           => NULL() !<
   real, pointer, dimension(:)     :: stk_wavenumbers => NULL() !<
   real, pointer, dimension(:,:,:) :: ustkb           => NULL() !<
   real, pointer, dimension(:,:,:) :: vstkb           => NULL() !<
@@ -749,7 +747,7 @@ subroutine convert_IOB_to_forces(IOB, forces, index_bounds, Time, G, US, CS, dt_
        (associated(IOB%mass_berg) .and. (.not. associated(forces%mass_berg))) ) &
     call allocate_mech_forcing(G, forces, iceberg=.true.)
 
-  if ( associated(IOB%ustk0) ) &
+  if ( associated(IOB%ustkb) ) &
     call allocate_mech_forcing(G, forces, waves=.true., num_stk_bands=IOB%num_stk_bands)
 
   if (associated(IOB%ice_rigidity)) then
@@ -825,11 +823,6 @@ subroutine convert_IOB_to_forces(IOB, forces, index_bounds, Time, G, US, CS, dt_
     endif
   endif
   forces%stk_wavenumbers(:) = IOB%stk_wavenumbers
-  do j=js,je; do i=is,ie
-     forces%ustk0(i,j) = IOB%ustk0(i-I0,j-J0) ! How to be careful here that the domains are right?
-     forces%vstk0(i,j) = IOB%vstk0(i-I0,j-J0)
-  enddo ; enddo
-  call pass_vector(forces%ustk0,forces%vstk0, G%domain )
   do istk = 1,IOB%num_stk_bands
     do j=js,je; do i=is,ie
       forces%ustkb(i,j,istk) = IOB%ustkb(i-I0,j-J0,istk)

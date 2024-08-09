@@ -35,8 +35,8 @@ end subroutine ensemble_manager_init
 
 !> Create a list of processing elements (PEs) across components
 !! associated with the current ensemble member.
-subroutine ensemble_pelist_setup(concurrent, atmos_npes, ocean_npes, land_npes, ice_npes, &
-                                   Atm_pelist, Ocean_pelist, Land_pelist, Ice_pelist)
+subroutine ensemble_pelist_setup(concurrent, atmos_npes, ocean_npes, land_npes, ice_npes, waves_npes,, &
+                                   Atm_pelist, Ocean_pelist, Land_pelist, Ice_pelist, Wave_pelist)
   logical,               intent(in)    :: concurrent !< A logical flag, if True, then ocean fast
                                                      !! PEs are run concurrently with
                                                      !! slow PEs within the coupler.
@@ -44,14 +44,16 @@ subroutine ensemble_pelist_setup(concurrent, atmos_npes, ocean_npes, land_npes, 
   integer,               intent(in)    :: ocean_npes !< The number of ocean (slow) PEs
   integer,               intent(in)    :: land_npes  !< The number of land PEs (fast)
   integer,               intent(in)    :: ice_npes   !< The number of ice (fast) PEs
+  integer,               intent(in)    :: waves_npes !< The number of wave PEs
   integer, dimension(:), intent(inout) :: Atm_pelist !< A list of Atm PEs
   integer, dimension(:), intent(inout) :: Ocean_pelist !< A list of Ocean PEs
   integer, dimension(:), intent(inout) :: Land_pelist !< A list of Land PEs
   integer, dimension(:), intent(inout) :: Ice_pelist !< A list of Ice PEs
+  integer, dimension(:), intent(inout) :: Wave_pelist !< A list of Wave PEs
 
 
-  call FMS_ensemble_pelist_setup(concurrent, atmos_npes, ocean_npes, land_npes, ice_npes, &
-         Atm_pelist, Ocean_pelist, Land_pelist, Ice_pelist)
+  call FMS_ensemble_pelist_setup(concurrent, atmos_npes, ocean_npes, land_npes, ice_npes, waves_npes, &
+         Atm_pelist, Ocean_pelist, Land_pelist, Ice_pelist, Wave_pelist)
 
 end subroutine ensemble_pelist_setup
 
@@ -71,7 +73,7 @@ end function get_ensemble_id
 !! index (5) :: Number of land PEs per ensemble member
 !! index (6) :: Number of ice PEs per ensemble member
 function get_ensemble_size()
-  integer, dimension(6) :: get_ensemble_size
+  integer, dimension(7) :: get_ensemble_size
 
   get_ensemble_size = FMS_get_ensemble_size()
 
