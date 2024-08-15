@@ -828,7 +828,7 @@ subroutine convert_IOB_to_forces(IOB, forces, index_bounds, Time, G, US, CS, dt_
       forces%ustkb(i,j,istk) = IOB%ustkb(i-I0,j-J0,istk)
       forces%vstkb(i,j,istk) = IOB%vstkb(i-I0,j-J0,istk)
     enddo; enddo
-    call pass_vector(forces%ustkb(:,:,istk),forces%vstkb(:,:,istk), G%domain )
+    call pass_vector(forces%ustkb(:,:,istk),forces%vstkb(:,:,istk), G%domain, stagger=AGRID)
   enddo
 
   ! Find the net mass source in the input forcing without other adjustments.
