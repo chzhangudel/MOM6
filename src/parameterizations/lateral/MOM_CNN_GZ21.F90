@@ -64,6 +64,9 @@ type, public :: CNN_CS ; private
 
   character(len=200) :: CNN_VS  !< default = "none". Vertical profile of CNN momentum forcing 
 
+  logical :: reentrant_x !< True if the x- directions are periodic.
+  logical :: reentrant_y !< True if the y- directions are periodic.
+
   type(diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
   integer :: id_CNNu = -1, id_CNNv = -1, id_KE_CNN = -1
@@ -127,6 +130,10 @@ subroutine CNN_init(Time,G,GV,US,param_file,diag,CS)
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=10)
+  call get_param(param_file, mdl, "REENTRANT_X", CS%reentrant_x, &
+                 "If true, the domain is zonally reentrant.",default=.true.)
+  call get_param(param_file, mdl, "REENTRANT_Y", CS%reentrant_y, &
+                 "If true, the domain is meridionally reentrant.",default=.false.)
 
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
@@ -192,7 +199,7 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   real, allocatable :: WH_uv(:,:,:,:)! CNN input
   real, allocatable :: Sxy(:,:,:,:)! CNN output
   real :: vs(SZI_(G),SZJ_(G),SZK_(GV)) ! vertical structure of the acceleration
-  type(group_pass_type) :: pass_CNN, pass_uvm
+  type(group_pass_type) :: pass_CNN
 
   real, allocatable, dimension(:,:,:)   :: g3d_u ! temp variable for u to gather velocity field
   real, allocatable, dimension(:,:,:)   :: g3d_v ! temp variable for v to gather velocity field
@@ -254,8 +261,8 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
 
   ! do k=1,nztemp
   !   do j=js,je ; do i=is,ie 
-  !     WH_u(i,j,k) = 0.01*(PE_here())
-  !     WH_v(i,j,k) = 0.01*(15.-PE_here())
+  !     WH_u(i,j,k) = (PE_here())
+  !     WH_v(i,j,k) = (15.-PE_here())
   !   enddo ; enddo 
   ! enddo
   ! if (is_root_pe()) then
@@ -265,12 +272,6 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
   !   enddo 
   !   close(10)
   ! endif
-
-  ! Update the wide halos of WH_u WH_v WH_m
-  call create_group_pass(pass_uvm,WH_u,CNN%CNN_Domain)
-  call create_group_pass(pass_uvm,WH_v,CNN%CNN_Domain)
-  call create_group_pass(pass_uvm,WH_m,CNN%CNN_Domain)
-  call do_group_pass(pass_uvm,CNN%CNN_Domain)
 
   ! Combine arrays for CNN input
   if (python_data_collect) then
@@ -297,19 +298,52 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
                     WH_m(is:ie,js:je), g3d_m, is_root_pe())
     call sync_PEs()
 
-    WH_uv_glob = 0.0; WH_m_glob = 0.0
-    do k=1,nztemp
-      do j=1,size(g3d_u,2) ; do i=1,size(g3d_u,1)
-        WH_uv_glob(1,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_u(i,j,k)
-        WH_uv_glob(2,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_v(i,j,k)
-        WH_m_glob(i+CNN%CNN_halo_size,j+CNN%CNN_halo_size) = g3d_m(i,j)
-      enddo ; enddo
-    enddo
-
-    index_global(1) = 1
-    index_global(2) = size(WH_m_glob,1)
-    index_global(3) = 1
-    index_global(4) = size(WH_m_glob,2)
+    if (is_root_pe()) then
+      index_global(1) = 1
+      index_global(2) = G%Domain%niglobal
+      index_global(3) = 1
+      index_global(4) = G%Domain%njglobal
+      WH_uv_glob = 0.0; WH_m_glob = 0.0
+      do k=1,nztemp
+        do j=index_global(3),index_global(4) ; do i=index_global(1),index_global(2)
+          WH_uv_glob(1,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_u(i,j,k)
+          WH_uv_glob(2,i+CNN%CNN_halo_size,j+CNN%CNN_halo_size,k) = g3d_v(i,j,k)
+          WH_m_glob(i+CNN%CNN_halo_size,j+CNN%CNN_halo_size) = g3d_m(i,j)
+        enddo ; enddo
+      enddo
+      if (CNN%REENTRANT_X) then
+        do k=1,nztemp
+          do j=1,size(WH_uv_glob,3) 
+            do i=1,CNN%CNN_halo_size
+              WH_uv_glob(1,i,j,k) = WH_uv_glob(1,i+size(WH_uv_glob,2)-2*CNN%CNN_halo_size,j,k)
+              WH_uv_glob(2,i,j,k) = WH_uv_glob(2,i+size(WH_uv_glob,2)-2*CNN%CNN_halo_size,j,k)
+              WH_m_glob(i,j) = WH_m_glob(i+size(WH_uv_glob,2)-2*CNN%CNN_halo_size,j)
+            enddo
+            do i=size(WH_uv_glob,2)-CNN%CNN_halo_size+1,size(WH_uv_glob,2)
+              WH_uv_glob(1,i,j,k) = WH_uv_glob(1,i-size(WH_uv_glob,2)+2*CNN%CNN_halo_size,j,k)
+              WH_uv_glob(2,i,j,k) = WH_uv_glob(2,i-size(WH_uv_glob,2)+2*CNN%CNN_halo_size,j,k)
+              WH_m_glob(i,j) = WH_m_glob(i-size(WH_uv_glob,2)+2*CNN%CNN_halo_size,j)
+            enddo
+          enddo
+        enddo
+      endif
+      if (CNN%REENTRANT_Y) then
+        do k=1,nztemp
+          do i=1,size(WH_uv_glob,2)
+            do j=1,CNN%CNN_halo_size
+              WH_uv_glob(1,i,j,k) = WH_uv_glob(1,i,j+size(WH_uv_glob,3)-2*CNN%CNN_halo_size,k)
+              WH_uv_glob(2,i,j,k) = WH_uv_glob(2,i,j+size(WH_uv_glob,3)-2*CNN%CNN_halo_size,k)
+              WH_m_glob(i,j) = WH_m_glob(i,j+size(WH_uv_glob,3)-2*CNN%CNN_halo_size)
+            enddo
+            do j=size(WH_uv_glob,3)-CNN%CNN_halo_size+1,size(WH_uv_glob,3)
+              WH_uv_glob(1,i,j,k) = WH_uv_glob(1,i,j-size(WH_uv_glob,3)+2*CNN%CNN_halo_size,k)
+              WH_uv_glob(2,i,j,k) = WH_uv_glob(2,i,j-size(WH_uv_glob,3)+2*CNN%CNN_halo_size,k)
+              WH_m_glob(i,j) = WH_m_glob(i,j-size(WH_uv_glob,3)+2*CNN%CNN_halo_size)
+            enddo
+          enddo
+        enddo
+      endif
+    endif
 
     ! if (is_root_pe()) then
     !   write(*,*) "PELIST=",pelist
@@ -354,7 +388,12 @@ subroutine CNN_inference(u, v, h, diffu, diffv, G, GV, VarMix, FP_CS, SS_CS, CNN
 
   else 
     ! not collect data to root PE
-    WH_uv = 0.0
+
+      ! Update the wide halos of WH_u WH_v WH_m
+      call pass_var(WH_u, CNN%CNN_Domain)
+      call pass_var(WH_v, CNN%CNN_Domain)
+      call pass_var(WH_m, CNN%CNN_Domain)
+
     do k=1,nztemp
       do j=jsdw,jedw ; do i=isdw,iedw 
         WH_uv(1,i,j,k) = WH_u(i,j,k)
